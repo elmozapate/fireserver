@@ -28,7 +28,7 @@ const PORT = process.env.PORT || 3090;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// ─── Git / GitHub config ──────────────────────────────────────────────────
+// ─── GitHub config ────────────────────────────────────────────────────────
 
 const DEFAULT_BRANCH = process.env.DEFAULT_BRANCH || 'main';
 const GITHUB_USER    = process.env.GITHUB_USER;
@@ -55,6 +55,57 @@ function unpack(data) {
     const { __w, __v, ...rest } = data;
     if (__w === true) return __v;
     return rest;
+}
+
+// ─── GitHub helper ────────────────────────────────────────────────────────
+
+async function githubPut({ filePath, content, branch, message }) {
+  const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${filePath}`;
+  const headers = {
+    Authorization: `token ${GITHUB_TOKEN}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+  };
+
+  // obtener SHA si ya existe (necesario para update)
+  let sha;
+  const checkRes = await fetch(`${apiUrl}?ref=${branch}`, { headers });
+  if (checkRes.status === 200) {
+    const existing = await checkRes.json();
+    sha = existing.sha;
+  } else if (checkRes.status !== 404) {
+    const err = await checkRes.json();
+    throw new Error(err.message);
+  }
+
+  const base64 = Buffer.isBuffer(content)
+    ? content.toString('base64')
+    : Buffer.from(content).toString('base64');
+
+  const res = await fetch(apiUrl, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({
+      message: message || `Upload ${filePath}`,
+      content: base64,
+      branch,
+      ...(sha && { sha }),
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message);
+  }
+
+  return res.json();
+}
+
+function ensureAuth(req, res, next) {
+  const apiKey = req.header('x-api-key') || req.body?.apiKey;
+  if (!apiKey || apiKey !== API_KEY)
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  next();
 }
 
 // ─── POST /set ───────────────────────────────────────────────────────────
@@ -154,7 +205,7 @@ app.post('/fetch', async (req, res) => {
     }
 });
 
-// ─── Template helper ─────────────────────────────────────────────────────
+// ─── Template helper ──────────────────────────────────────────────────────
 
 function createArticleTemplate(name) {
   return `<!DOCTYPE html>
@@ -190,12 +241,7 @@ function createArticleTemplate(name) {
 
 // ─── POST /create-template ───────────────────────────────────────────────
 
-app.post('/create-template', async (req, res) => {
-  const apiKey = req.header('x-api-key') || req.body?.apiKey;
-  if (!apiKey || apiKey !== API_KEY) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  }
-
+app.post('/create-template', ensureAuth, async (req, res) => {
   let { name, branch } = req.body;
   if (!name) return res.status(400).json({ ok: false, error: 'name is required' });
 
@@ -212,29 +258,21 @@ app.post('/create-template', async (req, res) => {
   };
 
   try {
-    // 1) verificar si ya existe
     const checkRes = await fetch(`${apiUrl}?ref=${branch}`, { headers });
-
-    if (checkRes.status === 200) {
+    if (checkRes.status === 200)
       return res.status(409).json({ ok: false, error: 'template already exists' });
-    }
     if (checkRes.status !== 404) {
       const err = await checkRes.json();
       return res.status(500).json({ ok: false, error: err.message });
     }
 
-    // 2) crear directo en GitHub — sin tocar disco
     const html    = createArticleTemplate(name);
     const content = Buffer.from(html).toString('base64');
 
     const createRes = await fetch(apiUrl, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({
-        message: `Create template ${name}`,
-        content,
-        branch,
-      }),
+      body: JSON.stringify({ message: `Create template ${name}`, content, branch }),
     });
 
     if (!createRes.ok) {
@@ -257,6 +295,143 @@ app.post('/create-template', async (req, res) => {
 
   } catch (error) {
     return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ─── POST /github-push ────────────────────────────────────────────────────
+//  Sube un archivo a GitHub desde: content directo | url | firebaseKey
+//  Opcional: saveToFirebase + firebaseSaveKey
+
+app.post('/github-push', ensureAuth, async (req, res) => {
+  const { path: filePath, content, url, firebaseKey,
+          branch, message, saveToFirebase, firebaseSaveKey } = req.body;
+
+  if (!filePath) return res.status(400).json({ ok: false, error: 'path is required' });
+
+  const targetBranch = branch || DEFAULT_BRANCH;
+
+  try {
+    let rawContent;
+
+    if (content !== undefined) {
+      rawContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+
+    } else if (url) {
+      const downloaded = await fetch(url);
+      if (!downloaded.ok) throw new Error(`Failed to download: ${downloaded.status}`);
+      rawContent = await downloaded.buffer();
+
+    } else if (firebaseKey) {
+      const snap = await docRef(firebaseKey).get();
+      if (!snap.exists) return res.status(404).json({ ok: false, error: 'Firebase key not found' });
+      const value = unpack(snap.data());
+      rawContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+
+    } else {
+      return res.status(400).json({ ok: false, error: 'Provide content, url, or firebaseKey' });
+    }
+
+    const data = await githubPut({ filePath, content: rawContent, branch: targetBranch, message });
+
+    if (saveToFirebase && firebaseSaveKey) {
+      const saveValue = typeof rawContent === 'string'
+        ? rawContent
+        : rawContent.toString('base64');
+      await docRef(firebaseSaveKey).set(pack(saveValue));
+    }
+
+    return res.json({
+      ok: true,
+      path: filePath,
+      branch: targetBranch,
+      sha:     data.content?.sha,
+      commit:  data.commit?.sha,
+      updated: !!data.content?.sha,
+    });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── GET /github-file ─────────────────────────────────────────────────────
+//  Descarga un archivo de GitHub
+//  Opcional: saveToFirebase=true + firebaseSaveKey=mi_key
+
+app.get('/github-file', ensureAuth, async (req, res) => {
+  const { path: filePath, branch, saveToFirebase, firebaseSaveKey } = req.query;
+  if (!filePath) return res.status(400).json({ ok: false, error: 'path is required' });
+
+  const targetBranch = branch || DEFAULT_BRANCH;
+  const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${filePath}?ref=${targetBranch}`;
+
+  try {
+    const ghRes = await fetch(apiUrl, {
+      headers: {
+        Authorization: `token ${GITHUB_TOKEN}`,
+        Accept: 'application/vnd.github+json',
+      },
+    });
+
+    if (ghRes.status === 404) return res.status(404).json({ ok: false, error: 'File not found' });
+    if (!ghRes.ok) {
+      const err = await ghRes.json();
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+
+    const data    = await ghRes.json();
+    const content = Buffer.from(data.content, 'base64').toString('utf8');
+
+    if (saveToFirebase === 'true' && firebaseSaveKey) {
+      await docRef(firebaseSaveKey).set(pack(content));
+    }
+
+    return res.json({
+      ok: true,
+      path: filePath,
+      branch: targetBranch,
+      sha:     data.sha,
+      size:    data.size,
+      content,
+    });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── POST /github-push-from-fb ────────────────────────────────────────────
+//  Toma un doc de Firebase y lo sube directo a GitHub
+
+app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
+  const { firebaseKey, path: filePath, branch, message } = req.body;
+  if (!firebaseKey) return res.status(400).json({ ok: false, error: 'firebaseKey is required' });
+  if (!filePath)    return res.status(400).json({ ok: false, error: 'path is required' });
+
+  try {
+    const snap = await docRef(firebaseKey).get();
+    if (!snap.exists) return res.status(404).json({ ok: false, error: 'Firebase key not found' });
+
+    const value   = unpack(snap.data());
+    const content = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+
+    const data = await githubPut({
+      filePath,
+      content,
+      branch: branch || DEFAULT_BRANCH,
+      message,
+    });
+
+    return res.json({
+      ok: true,
+      firebaseKey,
+      path:   filePath,
+      sha:    data.content?.sha,
+      commit: data.commit?.sha,
+    });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 });
 
