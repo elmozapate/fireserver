@@ -113,10 +113,9 @@ function ensureAuth(req, res, next) {
 
 const LIBRARY_KEY = 'library_index';
 
+// pages/files/assets vienen del scanner externo vía POST /set
+// solo templates, jsons y services se gestionan desde este server
 const TYPE_TO_LIST = {
-    page:     'pages',
-    file:     'files',
-    asset:    'assets',
     service:  'services',
     template: 'templates',
     json:     'jsons',
@@ -165,8 +164,6 @@ async function saveLibrary(library) {
         totalServices:  (library.services  || []).length,
         totalTemplates: (library.templates || []).length,
         totalJsons:     (library.jsons     || []).length,
-        ...(library.meta?.objectsTotal !== undefined && { objectsTotal: library.meta.objectsTotal }),
-        ...(library.meta?.refreshedAt  !== undefined && { refreshedAt:  library.meta.refreshedAt  }),
         updatedAt: Date.now(),
     };
     await docRef(LIBRARY_KEY).set(pack(library));
@@ -179,7 +176,7 @@ function buildLibraryEntry(key, value, extra = {}) {
 
     return {
         id:        existing.id        || safeKey(key),
-        type:      existing.type      || extra.type || 'file',
+        type:      existing.type      || extra.type,
         title:     existing.title     || existing.name || extra.title || key,
         name:      existing.name      || existing.title || extra.name || key,
         slug:      existing.slug      || extra.slug  || null,
@@ -196,7 +193,7 @@ function buildLibraryEntry(key, value, extra = {}) {
 async function syncToLibrary(key, value, extra = {}) {
     const type = (typeof value === 'object' && value?.type) || extra.type;
     const listName = TYPE_TO_LIST[type];
-    if (!listName) return;
+    if (!listName) return; // page/file/asset los maneja el scanner, no tocar
 
     const library = await getLibrary();
     if (!library[listName]) library[listName] = [];
@@ -239,7 +236,9 @@ app.post('/set', async (req, res) => {
         if (!key) return res.status(400).json({ ok: false, error: 'Key requerida' });
 
         await docRef(key).set(pack(value));
-        const entry = await syncToLibrary(key, value);
+
+        // solo sincroniza si es service/template/json; library_index se guarda tal cual
+        const entry = key !== LIBRARY_KEY ? await syncToLibrary(key, value) : null;
 
         res.json({ ok: true, key, libraryUpdated: !!entry });
     } catch (err) {
@@ -468,7 +467,7 @@ app.post('/github-push', ensureAuth, async (req, res) => {
         }
 
         let entry = null;
-        if (libraryMeta?.type) {
+        if (libraryMeta?.type && TYPE_TO_LIST[libraryMeta.type]) {
             entry = await syncToLibrary(
                 libraryMeta.id || filePath,
                 { ...libraryMeta, path: filePath, branch: targetBranch, sha: data.content?.sha }
@@ -549,11 +548,10 @@ app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
 
         const data = await githubPut({ filePath, content, branch: targetBranch, message });
 
-        const syncValue = (typeof value === 'object' && value?.type)
-            ? { ...value, path: filePath, branch: targetBranch, sha: data.content?.sha }
-            : libraryMeta?.type
-                ? { ...libraryMeta, path: filePath, branch: targetBranch, sha: data.content?.sha }
-                : null;
+        const type = (typeof value === 'object' && value?.type) || libraryMeta?.type;
+        const syncValue = type && TYPE_TO_LIST[type]
+            ? { ...(typeof value === 'object' ? value : libraryMeta), path: filePath, branch: targetBranch, sha: data.content?.sha }
+            : null;
 
         const entry = syncValue ? await syncToLibrary(firebaseKey, syncValue) : null;
 
@@ -631,16 +629,12 @@ app.delete('/library/remove-entry/:key', ensureAuth, async (req, res) => {
 });
 
 // ─── GET /api/pages ──────────────────────────────────────────────────────
+// pages/files/assets vienen directo del library (scanner los puso ahí)
 
 app.get('/api/pages', async (req, res) => {
     try {
         const library = await getLibrary();
-        const pages = [];
-        for (const entry of (library.pages || [])) {
-            const snap = await docRef(entry.id || entry).get();
-            if (snap.exists) pages.push(unpack(snap.data()));
-        }
-        res.json(pages);
+        res.json(library.pages || []);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -649,12 +643,7 @@ app.get('/api/pages', async (req, res) => {
 app.get('/api/services', async (req, res) => {
     try {
         const library = await getLibrary();
-        const services = [];
-        for (const entry of (library.services || [])) {
-            const snap = await docRef(entry.id || entry).get();
-            if (snap.exists) services.push(unpack(snap.data()));
-        }
-        res.json(services);
+        res.json(library.services || []);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -663,12 +652,7 @@ app.get('/api/services', async (req, res) => {
 app.get('/api/assets', async (req, res) => {
     try {
         const library = await getLibrary();
-        const assets = [];
-        for (const entry of (library.assets || [])) {
-            const snap = await docRef(entry.id || entry).get();
-            if (snap.exists) assets.push(unpack(snap.data()));
-        }
-        res.json(assets);
+        res.json(library.assets || []);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -677,12 +661,7 @@ app.get('/api/assets', async (req, res) => {
 app.get('/api/files', async (req, res) => {
     try {
         const library = await getLibrary();
-        const files = [];
-        for (const entry of (library.files || [])) {
-            const snap = await docRef(entry.id || entry).get();
-            if (snap.exists) files.push(unpack(snap.data()));
-        }
-        res.json(files);
+        res.json(library.files || []);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -711,40 +690,17 @@ app.get('/api/jsons', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════
 
 async function bootstrapLibrary() {
-    const library = await getLibrary();
-
-    const hasData = ['pages', 'files', 'assets', 'services', 'templates', 'jsons']
-        .some(k => (library[k] || []).length > 0);
-
-    if (hasData) return library;
-
-    const now = Date.now();
-
-    const pageHome = {
-        id: 'page_home', type: 'page',
-        title: 'Inicio', name: 'Inicio',
-        slug: '/', path: null,
-        branch: DEFAULT_BRANCH, sha: null,
-        status: 'published', tags: [],
-        createdAt: now, updatedAt: now,
-    };
-
-    const services = [
-        { id: 'service_pipeline', type: 'service', name: 'Pipeline',  title: 'Pipeline',  status: 'online' },
-        { id: 'service_gitsync',  type: 'service', name: 'GitSync',   title: 'GitSync',   status: 'online' },
-        { id: 'service_nim',      type: 'service', name: 'NIM',       title: 'NIM',       status: 'offline' },
-    ].map(s => ({ ...s, slug: null, path: null, branch: DEFAULT_BRANCH, sha: null, tags: [], createdAt: now, updatedAt: now }));
-
-    await docRef(pageHome.id).set(pack(pageHome));
-    for (const s of services) await docRef(s.id).set(pack(s));
-
-    library.pages    = [pageHome];
-    library.services = services;
-    library.templates = library.templates || [];
-    library.jsons     = library.jsons     || [];
-
-    await saveLibrary(library);
-    return library;
+    const snap = await docRef(LIBRARY_KEY).get();
+    if (!snap.exists) {
+        console.warn('⚠ library_index not found in Firestore — waiting for scanner to push it');
+        return {
+            id: LIBRARY_KEY,
+            pages: [], files: [], assets: [], services: [],
+            templates: [], jsons: [],
+            meta: { totalPages: 0, totalFiles: 0, totalAssets: 0, totalServices: 0, updatedAt: Date.now() },
+        };
+    }
+    return unpack(snap.data());
 }
 
 // ─── Arranque ────────────────────────────────────────────────────────────
@@ -753,7 +709,7 @@ async function bootstrapLibrary() {
     try {
         await bootstrapLibrary();
         const library = await getLibraryWithObjects();
-        console.log(`✓ Library initialized — ${Object.keys(library.objects).length} objects`);
+        console.log(`✓ Library initialized — pages: ${library.pages?.length ?? 0}, files: ${library.files?.length ?? 0}, assets: ${library.assets?.length ?? 0}, objects: ${Object.keys(library.objects).length}`);
     } catch (err) {
         console.error('Library bootstrap error:', err.message);
     }
