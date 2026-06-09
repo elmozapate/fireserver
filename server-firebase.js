@@ -1,10 +1,10 @@
 // server-firebase.js
 require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const admin = require('firebase-admin');
+
 admin.initializeApp({
     credential: admin.credential.cert({
         type: process.env.FIREBASE_TYPE,
@@ -28,7 +28,15 @@ const PORT = process.env.PORT || 3090;
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-// ─── helpers ─────────────────────────────────
+// ─── Git / GitHub config ──────────────────────────────────────────────────
+
+const DEFAULT_BRANCH = process.env.DEFAULT_BRANCH || 'main';
+const GITHUB_USER    = process.env.GITHUB_USER;
+const GITHUB_TOKEN   = process.env.GITHUB_TOKEN;
+const REPO_NAME      = process.env.REPO_NAME || 'writter';
+const API_KEY        = process.env.API_KEY || '';
+
+// ─── Firebase helpers ─────────────────────────────────────────────────────
 
 function safeKey(key) {
     return key.replace(/[^a-zA-Z0-9_\-]/g, '_');
@@ -49,7 +57,7 @@ function unpack(data) {
     return rest;
 }
 
-// ─── POST /set ───────────────────────────────
+// ─── POST /set ───────────────────────────────────────────────────────────
 
 app.post('/set', async (req, res) => {
     try {
@@ -64,7 +72,7 @@ app.post('/set', async (req, res) => {
     }
 });
 
-// ─── GET /get/:key ───────────────────────────
+// ─── GET /get/:key ───────────────────────────────────────────────────────
 
 app.get('/get/:key', async (req, res) => {
     try {
@@ -78,7 +86,7 @@ app.get('/get/:key', async (req, res) => {
     }
 });
 
-// ─── DELETE /delete/:key ─────────────────────
+// ─── DELETE /delete/:key ─────────────────────────────────────────────────
 
 app.delete('/delete/:key', async (req, res) => {
     try {
@@ -94,7 +102,7 @@ app.delete('/delete/:key', async (req, res) => {
     }
 });
 
-// ─── GET /keys ───────────────────────────────
+// ─── GET /keys ───────────────────────────────────────────────────────────
 
 app.get('/keys', async (req, res) => {
     try {
@@ -116,7 +124,7 @@ app.get('/keys', async (req, res) => {
     }
 });
 
-// ─── GET /all ────────────────────────────────
+// ─── GET /all ────────────────────────────────────────────────────────────
 
 app.get('/all', async (req, res) => {
     try {
@@ -130,7 +138,7 @@ app.get('/all', async (req, res) => {
     }
 });
 
-// ─── POST /fetch ─────────────────────────────
+// ─── POST /fetch ─────────────────────────────────────────────────────────
 
 app.post('/fetch', async (req, res) => {
     try {
@@ -146,7 +154,113 @@ app.post('/fetch', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────
+// ─── Template helper ─────────────────────────────────────────────────────
+
+function createArticleTemplate(name) {
+  return `<!DOCTYPE html>
+<html lang="es" data-lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${name}</title>
+  <link rel="stylesheet" href="arqueostyles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Spectral:ital,wght@0,300;0,400;1,300&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet" />
+  <script>window.SA_KEY = "${name}";</script>
+  <script src="content.js"></script>
+</head>
+<body>
+  <div id="loader">
+    <div class="loader-inner">
+      <div class="loader-glyph">⊕</div>
+      <div class="loader-text" id="loader-text">Cargando…</div>
+    </div>
+  </div>
+  <div id="cursor"></div>
+  <div id="cursor-trail"></div>
+  <script src="arqueomain.js"></script>
+  <script src="screenSmart.js"></script>
+  <script src="mosueclick.js"></script>
+  <script src="narradorJS.js"></script>
+  <script src="pdf-exporter.js"></script>
+</body>
+</html>`;
+}
+
+// ─── POST /create-template ───────────────────────────────────────────────
+
+app.post('/create-template', async (req, res) => {
+  const apiKey = req.header('x-api-key') || req.body?.apiKey;
+  if (!apiKey || apiKey !== API_KEY) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+
+  let { name, branch } = req.body;
+  if (!name) return res.status(400).json({ ok: false, error: 'name is required' });
+
+  branch = branch || DEFAULT_BRANCH;
+  name = String(name).trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
+  if (!name) return res.status(400).json({ ok: false, error: 'invalid name' });
+
+  const filePath = `public/dabeiba/${name}.html`;
+  const apiUrl   = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${filePath}`;
+  const headers  = {
+    Authorization: `token ${GITHUB_TOKEN}`,
+    Accept: 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    // 1) verificar si ya existe
+    const checkRes = await fetch(`${apiUrl}?ref=${branch}`, { headers });
+
+    if (checkRes.status === 200) {
+      return res.status(409).json({ ok: false, error: 'template already exists' });
+    }
+    if (checkRes.status !== 404) {
+      const err = await checkRes.json();
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+
+    // 2) crear directo en GitHub — sin tocar disco
+    const html    = createArticleTemplate(name);
+    const content = Buffer.from(html).toString('base64');
+
+    const createRes = await fetch(apiUrl, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        message: `Create template ${name}`,
+        content,
+        branch,
+      }),
+    });
+
+    if (!createRes.ok) {
+      const err = await createRes.json();
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+
+    const data = await createRes.json();
+
+    return res.status(200).json({
+      ok: true,
+      changed: true,
+      name,
+      path: filePath,
+      url: `/${name}.html`,
+      branch,
+      sha:    data.content?.sha,
+      commit: data.commit?.sha,
+    });
+
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// ─── Arranque ────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
     console.log(`✓ Servidor en http://localhost:${PORT}`);
