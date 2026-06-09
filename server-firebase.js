@@ -113,7 +113,6 @@ function ensureAuth(req, res, next) {
 
 const LIBRARY_KEY = 'library_index';
 
-// Tipos válidos y a qué lista del library pertenecen
 const TYPE_TO_LIST = {
     page:     'pages',
     file:     'files',
@@ -144,6 +143,20 @@ async function getLibrary() {
     return unpack(snap.data());
 }
 
+async function getLibraryWithObjects() {
+    const [library, snap] = await Promise.all([
+        getLibrary(),
+        db.collection(COLLECTION).get(),
+    ]);
+
+    const objects = {};
+    snap.docs.forEach(d => {
+        if (d.id !== LIBRARY_KEY) objects[d.id] = unpack(d.data());
+    });
+
+    return { ...library, objects };
+}
+
 async function saveLibrary(library) {
     library.meta = {
         totalPages:     (library.pages     || []).length,
@@ -152,7 +165,6 @@ async function saveLibrary(library) {
         totalServices:  (library.services  || []).length,
         totalTemplates: (library.templates || []).length,
         totalJsons:     (library.jsons     || []).length,
-        // preservar campos extra que puedan existir
         ...(library.meta?.objectsTotal !== undefined && { objectsTotal: library.meta.objectsTotal }),
         ...(library.meta?.refreshedAt  !== undefined && { refreshedAt:  library.meta.refreshedAt  }),
         updatedAt: Date.now(),
@@ -161,10 +173,6 @@ async function saveLibrary(library) {
     return library;
 }
 
-/**
- * Construye el registro enriquecido de un item para el library.
- * Toma lo que haya en value + campos de contexto opcionales.
- */
 function buildLibraryEntry(key, value, extra = {}) {
     const now = Date.now();
     const existing = typeof value === 'object' && value !== null ? value : {};
@@ -185,14 +193,10 @@ function buildLibraryEntry(key, value, extra = {}) {
     };
 }
 
-/**
- * Agrega o actualiza un item en la lista correcta del library.
- * Si value no tiene un tipo reconocido, no hace nada.
- */
 async function syncToLibrary(key, value, extra = {}) {
     const type = (typeof value === 'object' && value?.type) || extra.type;
     const listName = TYPE_TO_LIST[type];
-    if (!listName) return; // tipo desconocido → no tocar library
+    if (!listName) return;
 
     const library = await getLibrary();
     if (!library[listName]) library[listName] = [];
@@ -201,7 +205,6 @@ async function syncToLibrary(key, value, extra = {}) {
     const idx = library[listName].findIndex(e => e.id === entry.id);
 
     if (idx >= 0) {
-        // preservar createdAt original
         entry.createdAt = library[listName][idx].createdAt;
         library[listName][idx] = entry;
     } else {
@@ -212,9 +215,6 @@ async function syncToLibrary(key, value, extra = {}) {
     return entry;
 }
 
-/**
- * Elimina un item del library buscando por id en todas las listas.
- */
 async function removeFromLibrary(key) {
     const id = safeKey(key);
     const library = await getLibrary();
@@ -239,12 +239,9 @@ app.post('/set', async (req, res) => {
         if (!key) return res.status(400).json({ ok: false, error: 'Key requerida' });
 
         await docRef(key).set(pack(value));
-
-        // Sync al library si el value tiene type reconocido
         const entry = await syncToLibrary(key, value);
 
         res.json({ ok: true, key, libraryUpdated: !!entry });
-
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
@@ -274,7 +271,6 @@ app.delete('/delete/:key', async (req, res) => {
         const removed = await removeFromLibrary(req.params.key);
 
         res.json({ ok: true, deleted: req.params.key, libraryUpdated: removed });
-
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
@@ -296,7 +292,6 @@ app.get('/keys', async (req, res) => {
 
         const snap = await query.select().get();
         res.json({ ok: true, keys: snap.docs.map(d => d.id) });
-
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
@@ -406,7 +401,6 @@ app.post('/create-template', ensureAuth, async (req, res) => {
 
         const data = await createRes.json();
 
-        // Sync al library como template
         const entry = await syncToLibrary(`template_${name}`, {
             id:     `template_${name}`,
             type:   'template',
@@ -430,7 +424,6 @@ app.post('/create-template', ensureAuth, async (req, res) => {
             commit: data.commit?.sha,
             libraryEntry: entry,
         });
-
     } catch (error) {
         return res.status(500).json({ ok: false, error: error.message });
     }
@@ -474,17 +467,11 @@ app.post('/github-push', ensureAuth, async (req, res) => {
             await docRef(firebaseSaveKey).set(pack(saveValue));
         }
 
-        // Sync al library si viene libraryMeta con type reconocido
         let entry = null;
         if (libraryMeta?.type) {
             entry = await syncToLibrary(
                 libraryMeta.id || filePath,
-                {
-                    ...libraryMeta,
-                    path:   filePath,
-                    branch: targetBranch,
-                    sha:    data.content?.sha,
-                }
+                { ...libraryMeta, path: filePath, branch: targetBranch, sha: data.content?.sha }
             );
         }
 
@@ -497,7 +484,6 @@ app.post('/github-push', ensureAuth, async (req, res) => {
             updated: !!data.content?.sha,
             libraryEntry: entry,
         });
-
     } catch (err) {
         return res.status(500).json({ ok: false, error: err.message });
     }
@@ -541,7 +527,6 @@ app.get('/github-file', ensureAuth, async (req, res) => {
             size: data.size,
             content,
         });
-
     } catch (err) {
         return res.status(500).json({ ok: false, error: err.message });
     }
@@ -564,7 +549,6 @@ app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
 
         const data = await githubPut({ filePath, content, branch: targetBranch, message });
 
-        // Sync automático: si el value guardado tiene type, úsalo; si no, usa libraryMeta
         const syncValue = (typeof value === 'object' && value?.type)
             ? { ...value, path: filePath, branch: targetBranch, sha: data.content?.sha }
             : libraryMeta?.type
@@ -581,26 +565,17 @@ app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
             commit: data.commit?.sha,
             libraryEntry: entry,
         });
-
     } catch (err) {
         return res.status(500).json({ ok: false, error: err.message });
     }
 });
+
 // ─── GET /library ─────────────────────────────────────────────────────────
 
 app.get('/library', async (req, res) => {
     try {
-        const [library, snap] = await Promise.all([
-            getLibrary(),
-            db.collection(COLLECTION).get(),
-        ]);
-
-        const objects = {};
-        snap.docs.forEach(d => {
-            if (d.id !== LIBRARY_KEY) objects[d.id] = unpack(d.data());
-        });
-
-        res.json({ ok: true, library: { ...library, objects } });
+        const library = await getLibraryWithObjects();
+        res.json({ ok: true, library });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
@@ -610,22 +585,7 @@ app.get('/library', async (req, res) => {
 
 app.get('/library/refresh', ensureAuth, async (req, res) => {
     try {
-        const [library, snap] = await Promise.all([
-            getLibrary(),
-            db.collection(COLLECTION).get(),
-        ]);
-
-        const objects = {};
-        snap.docs.forEach(d => {
-            if (d.id !== LIBRARY_KEY) objects[d.id] = unpack(d.data());
-        });
-
-        library.objects = objects;
-        library.meta.objectsTotal = Object.keys(objects).length;
-        library.meta.refreshedAt  = Date.now();
-
-        await docRef(LIBRARY_KEY).set(pack(library));
-
+        const library = await getLibraryWithObjects();
         res.json({ ok: true, library });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
@@ -669,6 +629,7 @@ app.delete('/library/remove-entry/:key', ensureAuth, async (req, res) => {
         res.status(500).json({ ok: false, error: err.message });
     }
 });
+
 // ─── GET /api/pages ──────────────────────────────────────────────────────
 
 app.get('/api/pages', async (req, res) => {
@@ -727,8 +688,6 @@ app.get('/api/files', async (req, res) => {
     }
 });
 
-// ─── GET /api/templates ───────────────────────────────────────────────────
-
 app.get('/api/templates', async (req, res) => {
     try {
         const library = await getLibrary();
@@ -754,7 +713,7 @@ app.get('/api/jsons', async (req, res) => {
 async function bootstrapLibrary() {
     const library = await getLibrary();
 
-    const hasData = ['pages','files','assets','services','templates','jsons']
+    const hasData = ['pages', 'files', 'assets', 'services', 'templates', 'jsons']
         .some(k => (library[k] || []).length > 0);
 
     if (hasData) return library;
@@ -793,7 +752,8 @@ async function bootstrapLibrary() {
 (async () => {
     try {
         await bootstrapLibrary();
-        console.log('✓ Library initialized');
+        const library = await getLibraryWithObjects();
+        console.log(`✓ Library initialized — ${Object.keys(library.objects).length} objects`);
     } catch (err) {
         console.error('Library bootstrap error:', err.message);
     }
