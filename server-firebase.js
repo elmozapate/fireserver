@@ -67,7 +67,6 @@ async function githubPut({ filePath, content, branch, message }) {
         'Content-Type': 'application/json',
     };
 
-    // obtener SHA si ya existe (necesario para update)
     let sha;
     const checkRes = await fetch(`${apiUrl}?ref=${branch}`, { headers });
     if (checkRes.status === 200) {
@@ -102,23 +101,134 @@ async function githubPut({ filePath, content, branch, message }) {
 }
 
 function ensureAuth(req, res, next) {
-
-    if (!API_KEY) {
-        return next();
-    }
-
-    const apiKey =
-        req.header('x-api-key') ||
-        req.body?.apiKey;
-
-    if (apiKey !== API_KEY) {
-        return res.status(401).json({
-            ok: false,
-            error: 'Unauthorized'
-        });
-    }
-
+    if (!API_KEY) return next();
+    const apiKey = req.header('x-api-key') || req.body?.apiKey;
+    if (apiKey !== API_KEY) return res.status(401).json({ ok: false, error: 'Unauthorized' });
     next();
+}
+
+// ════════════════════════════════════════════════════════
+// LIBRARY
+// ════════════════════════════════════════════════════════
+
+const LIBRARY_KEY = 'library_index';
+
+// Tipos válidos y a qué lista del library pertenecen
+const TYPE_TO_LIST = {
+    page:     'pages',
+    file:     'files',
+    asset:    'assets',
+    service:  'services',
+    template: 'templates',
+    json:     'jsons',
+};
+
+async function getLibrary() {
+    const snap = await docRef(LIBRARY_KEY).get();
+    if (!snap.exists) {
+        return {
+            id: LIBRARY_KEY,
+            pages:     [],
+            files:     [],
+            assets:    [],
+            services:  [],
+            templates: [],
+            jsons:     [],
+            meta: {
+                totalPages: 0, totalFiles: 0, totalAssets: 0,
+                totalServices: 0, totalTemplates: 0, totalJsons: 0,
+                updatedAt: Date.now(),
+            },
+        };
+    }
+    return unpack(snap.data());
+}
+
+async function saveLibrary(library) {
+    library.meta = {
+        totalPages:     (library.pages     || []).length,
+        totalFiles:     (library.files     || []).length,
+        totalAssets:    (library.assets    || []).length,
+        totalServices:  (library.services  || []).length,
+        totalTemplates: (library.templates || []).length,
+        totalJsons:     (library.jsons     || []).length,
+        // preservar campos extra que puedan existir
+        ...(library.meta?.objectsTotal !== undefined && { objectsTotal: library.meta.objectsTotal }),
+        ...(library.meta?.refreshedAt  !== undefined && { refreshedAt:  library.meta.refreshedAt  }),
+        updatedAt: Date.now(),
+    };
+    await docRef(LIBRARY_KEY).set(pack(library));
+    return library;
+}
+
+/**
+ * Construye el registro enriquecido de un item para el library.
+ * Toma lo que haya en value + campos de contexto opcionales.
+ */
+function buildLibraryEntry(key, value, extra = {}) {
+    const now = Date.now();
+    const existing = typeof value === 'object' && value !== null ? value : {};
+
+    return {
+        id:        existing.id        || safeKey(key),
+        type:      existing.type      || extra.type || 'file',
+        title:     existing.title     || existing.name || extra.title || key,
+        name:      existing.name      || existing.title || extra.name || key,
+        slug:      existing.slug      || extra.slug  || null,
+        path:      existing.path      || extra.path  || null,
+        branch:    existing.branch    || extra.branch || DEFAULT_BRANCH,
+        sha:       existing.sha       || extra.sha   || null,
+        status:    existing.status    || extra.status || 'active',
+        tags:      existing.tags      || extra.tags  || [],
+        createdAt: existing.createdAt || extra.createdAt || now,
+        updatedAt: now,
+    };
+}
+
+/**
+ * Agrega o actualiza un item en la lista correcta del library.
+ * Si value no tiene un tipo reconocido, no hace nada.
+ */
+async function syncToLibrary(key, value, extra = {}) {
+    const type = (typeof value === 'object' && value?.type) || extra.type;
+    const listName = TYPE_TO_LIST[type];
+    if (!listName) return; // tipo desconocido → no tocar library
+
+    const library = await getLibrary();
+    if (!library[listName]) library[listName] = [];
+
+    const entry = buildLibraryEntry(key, value, extra);
+    const idx = library[listName].findIndex(e => e.id === entry.id);
+
+    if (idx >= 0) {
+        // preservar createdAt original
+        entry.createdAt = library[listName][idx].createdAt;
+        library[listName][idx] = entry;
+    } else {
+        library[listName].push(entry);
+    }
+
+    await saveLibrary(library);
+    return entry;
+}
+
+/**
+ * Elimina un item del library buscando por id en todas las listas.
+ */
+async function removeFromLibrary(key) {
+    const id = safeKey(key);
+    const library = await getLibrary();
+    let changed = false;
+
+    for (const listName of Object.values(TYPE_TO_LIST)) {
+        if (!library[listName]) continue;
+        const before = library[listName].length;
+        library[listName] = library[listName].filter(e => e.id !== id);
+        if (library[listName].length !== before) changed = true;
+    }
+
+    if (changed) await saveLibrary(library);
+    return changed;
 }
 
 // ─── POST /set ───────────────────────────────────────────────────────────
@@ -129,7 +239,11 @@ app.post('/set', async (req, res) => {
         if (!key) return res.status(400).json({ ok: false, error: 'Key requerida' });
 
         await docRef(key).set(pack(value));
-        res.json({ ok: true, key });
+
+        // Sync al library si el value tiene type reconocido
+        const entry = await syncToLibrary(key, value);
+
+        res.json({ ok: true, key, libraryUpdated: !!entry });
 
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
@@ -142,9 +256,7 @@ app.get('/get/:key', async (req, res) => {
     try {
         const snap = await docRef(req.params.key).get();
         if (!snap.exists) return res.status(404).json({ ok: false, error: 'No existe' });
-
         res.json({ ok: true, key: req.params.key, value: unpack(snap.data()) });
-
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
@@ -159,7 +271,9 @@ app.delete('/delete/:key', async (req, res) => {
         if (!snap.exists) return res.status(404).json({ ok: false, error: 'No existe' });
 
         await ref.delete();
-        res.json({ ok: true, deleted: req.params.key });
+        const removed = await removeFromLibrary(req.params.key);
+
+        res.json({ ok: true, deleted: req.params.key, libraryUpdated: removed });
 
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
@@ -196,7 +310,6 @@ app.get('/all', async (req, res) => {
         const items = {};
         snap.docs.forEach(d => { items[d.id] = unpack(d.data()); });
         res.json({ ok: true, items });
-
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
@@ -208,11 +321,9 @@ app.post('/fetch', async (req, res) => {
     try {
         const { url, options } = req.body;
         if (!url) return res.status(400).json({ ok: false, error: 'URL requerida' });
-
         const response = await fetch(url, options || {});
         const text = await response.text();
         res.json({ ok: true, status: response.status, data: text });
-
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
@@ -295,6 +406,19 @@ app.post('/create-template', ensureAuth, async (req, res) => {
 
         const data = await createRes.json();
 
+        // Sync al library como template
+        const entry = await syncToLibrary(`template_${name}`, {
+            id:     `template_${name}`,
+            type:   'template',
+            title:  name,
+            name,
+            path:   filePath,
+            slug:   `/${name}.html`,
+            branch,
+            sha:    data.content?.sha,
+            status: 'published',
+        });
+
         return res.status(200).json({
             ok: true,
             changed: true,
@@ -302,8 +426,9 @@ app.post('/create-template', ensureAuth, async (req, res) => {
             path: filePath,
             url: `/${name}.html`,
             branch,
-            sha: data.content?.sha,
+            sha:    data.content?.sha,
             commit: data.commit?.sha,
+            libraryEntry: entry,
         });
 
     } catch (error) {
@@ -312,12 +437,11 @@ app.post('/create-template', ensureAuth, async (req, res) => {
 });
 
 // ─── POST /github-push ────────────────────────────────────────────────────
-//  Sube un archivo a GitHub desde: content directo | url | firebaseKey
-//  Opcional: saveToFirebase + firebaseSaveKey
 
 app.post('/github-push', ensureAuth, async (req, res) => {
     const { path: filePath, content, url, firebaseKey,
-        branch, message, saveToFirebase, firebaseSaveKey } = req.body;
+        branch, message, saveToFirebase, firebaseSaveKey,
+        libraryMeta } = req.body;
 
     if (!filePath) return res.status(400).json({ ok: false, error: 'path is required' });
 
@@ -328,18 +452,15 @@ app.post('/github-push', ensureAuth, async (req, res) => {
 
         if (content !== undefined) {
             rawContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
-
         } else if (url) {
             const downloaded = await fetch(url);
             if (!downloaded.ok) throw new Error(`Failed to download: ${downloaded.status}`);
             rawContent = await downloaded.buffer();
-
         } else if (firebaseKey) {
             const snap = await docRef(firebaseKey).get();
             if (!snap.exists) return res.status(404).json({ ok: false, error: 'Firebase key not found' });
             const value = unpack(snap.data());
             rawContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
-
         } else {
             return res.status(400).json({ ok: false, error: 'Provide content, url, or firebaseKey' });
         }
@@ -353,13 +474,28 @@ app.post('/github-push', ensureAuth, async (req, res) => {
             await docRef(firebaseSaveKey).set(pack(saveValue));
         }
 
+        // Sync al library si viene libraryMeta con type reconocido
+        let entry = null;
+        if (libraryMeta?.type) {
+            entry = await syncToLibrary(
+                libraryMeta.id || filePath,
+                {
+                    ...libraryMeta,
+                    path:   filePath,
+                    branch: targetBranch,
+                    sha:    data.content?.sha,
+                }
+            );
+        }
+
         return res.json({
             ok: true,
             path: filePath,
             branch: targetBranch,
-            sha: data.content?.sha,
+            sha:    data.content?.sha,
             commit: data.commit?.sha,
             updated: !!data.content?.sha,
+            libraryEntry: entry,
         });
 
     } catch (err) {
@@ -368,8 +504,6 @@ app.post('/github-push', ensureAuth, async (req, res) => {
 });
 
 // ─── GET /github-file ─────────────────────────────────────────────────────
-//  Descarga un archivo de GitHub
-//  Opcional: saveToFirebase=true + firebaseSaveKey=mi_key
 
 app.get('/github-file', ensureAuth, async (req, res) => {
     const { path: filePath, branch, saveToFirebase, firebaseSaveKey } = req.query;
@@ -403,7 +537,7 @@ app.get('/github-file', ensureAuth, async (req, res) => {
             ok: true,
             path: filePath,
             branch: targetBranch,
-            sha: data.sha,
+            sha:  data.sha,
             size: data.size,
             content,
         });
@@ -414,353 +548,258 @@ app.get('/github-file', ensureAuth, async (req, res) => {
 });
 
 // ─── POST /github-push-from-fb ────────────────────────────────────────────
-//  Toma un doc de Firebase y lo sube directo a GitHub
 
 app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
-    const { firebaseKey, path: filePath, branch, message } = req.body;
+    const { firebaseKey, path: filePath, branch, message, libraryMeta } = req.body;
     if (!firebaseKey) return res.status(400).json({ ok: false, error: 'firebaseKey is required' });
-    if (!filePath) return res.status(400).json({ ok: false, error: 'path is required' });
+    if (!filePath)    return res.status(400).json({ ok: false, error: 'path is required' });
 
     try {
         const snap = await docRef(firebaseKey).get();
         if (!snap.exists) return res.status(404).json({ ok: false, error: 'Firebase key not found' });
 
-        const value = unpack(snap.data());
+        const value   = unpack(snap.data());
         const content = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+        const targetBranch = branch || DEFAULT_BRANCH;
 
-        const data = await githubPut({
-            filePath,
-            content,
-            branch: branch || DEFAULT_BRANCH,
-            message,
-        });
+        const data = await githubPut({ filePath, content, branch: targetBranch, message });
+
+        // Sync automático: si el value guardado tiene type, úsalo; si no, usa libraryMeta
+        const syncValue = (typeof value === 'object' && value?.type)
+            ? { ...value, path: filePath, branch: targetBranch, sha: data.content?.sha }
+            : libraryMeta?.type
+                ? { ...libraryMeta, path: filePath, branch: targetBranch, sha: data.content?.sha }
+                : null;
+
+        const entry = syncValue ? await syncToLibrary(firebaseKey, syncValue) : null;
 
         return res.json({
             ok: true,
             firebaseKey,
-            path: filePath,
-            sha: data.content?.sha,
+            path:   filePath,
+            sha:    data.content?.sha,
             commit: data.commit?.sha,
+            libraryEntry: entry,
         });
 
     } catch (err) {
         return res.status(500).json({ ok: false, error: err.message });
     }
 });
+// ─── GET /library ─────────────────────────────────────────────────────────
 
 app.get('/library', async (req, res) => {
-
     try {
+        const [library, snap] = await Promise.all([
+            getLibrary(),
+            db.collection(COLLECTION).get(),
+        ]);
 
-        const library = await getLibrary();
-
-        res.json({
-            ok: true,
-            library
+        const objects = {};
+        snap.docs.forEach(d => {
+            if (d.id !== LIBRARY_KEY) objects[d.id] = unpack(d.data());
         });
 
+        res.json({ ok: true, library: { ...library, objects } });
     } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
 
-        res.status(500).json({
-            ok: false,
-            error: err.message
+// ─── GET /library/refresh ─────────────────────────────────────────────────
+
+app.get('/library/refresh', ensureAuth, async (req, res) => {
+    try {
+        const [library, snap] = await Promise.all([
+            getLibrary(),
+            db.collection(COLLECTION).get(),
+        ]);
+
+        const objects = {};
+        snap.docs.forEach(d => {
+            if (d.id !== LIBRARY_KEY) objects[d.id] = unpack(d.data());
         });
 
-    }
+        library.objects = objects;
+        library.meta.objectsTotal = Object.keys(objects).length;
+        library.meta.refreshedAt  = Date.now();
 
+        await docRef(LIBRARY_KEY).set(pack(library));
+
+        res.json({ ok: true, library });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
 });
+
+// ─── POST /library/bootstrap ──────────────────────────────────────────────
 
 app.post('/library/bootstrap', ensureAuth, async (req, res) => {
-
     try {
-
         const library = await bootstrapLibrary();
-
-        res.json({
-            ok: true,
-            library
-        });
-
+        res.json({ ok: true, library });
     } catch (err) {
-
-        res.status(500).json({
-            ok: false,
-            error: err.message
-        });
-
+        res.status(500).json({ ok: false, error: err.message });
     }
-
 });
 
-app.get('/api/pages', async (req, res) => {
+// ─── POST /library/sync-entry ─────────────────────────────────────────────
 
+app.post('/library/sync-entry', ensureAuth, async (req, res) => {
     try {
+        const { key, value, extra } = req.body;
+        if (!key) return res.status(400).json({ ok: false, error: 'key is required' });
 
-        const library = await getLibrary();
+        const entry = await syncToLibrary(key, value || {}, extra || {});
+        if (!entry) return res.status(400).json({ ok: false, error: 'type not recognized — cannot sync' });
 
-        const pages = [];
-
-        for (const id of library.pages) {
-
-            const snap = await docRef(id).get();
-
-            if (snap.exists) {
-                pages.push(
-                    unpack(snap.data())
-                );
-            }
-
-        }
-
-        res.json(pages);
-
+        res.json({ ok: true, entry });
     } catch (err) {
-
-        res.status(500).json({
-            error: err.message
-        });
-
+        res.status(500).json({ ok: false, error: err.message });
     }
+});
 
+// ─── DELETE /library/remove-entry/:key ───────────────────────────────────
+
+app.delete('/library/remove-entry/:key', ensureAuth, async (req, res) => {
+    try {
+        const removed = await removeFromLibrary(req.params.key);
+        res.json({ ok: true, removed });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+// ─── GET /api/pages ──────────────────────────────────────────────────────
+
+app.get('/api/pages', async (req, res) => {
+    try {
+        const library = await getLibrary();
+        const pages = [];
+        for (const entry of (library.pages || [])) {
+            const snap = await docRef(entry.id || entry).get();
+            if (snap.exists) pages.push(unpack(snap.data()));
+        }
+        res.json(pages);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/api/services', async (req, res) => {
-
     try {
-
         const library = await getLibrary();
-
         const services = [];
-
-        for (const id of library.services) {
-
-            const snap = await docRef(id).get();
-
-            if (snap.exists) {
-                services.push(
-                    unpack(snap.data())
-                );
-            }
-
+        for (const entry of (library.services || [])) {
+            const snap = await docRef(entry.id || entry).get();
+            if (snap.exists) services.push(unpack(snap.data()));
         }
-
         res.json(services);
-
     } catch (err) {
-
-        res.status(500).json({
-            error: err.message
-        });
-
+        res.status(500).json({ error: err.message });
     }
-
 });
 
 app.get('/api/assets', async (req, res) => {
-
     try {
-
         const library = await getLibrary();
-
         const assets = [];
-
-        for (const id of library.assets) {
-
-            const snap = await docRef(id).get();
-
-            if (snap.exists) {
-                assets.push(
-                    unpack(snap.data())
-                );
-            }
-
+        for (const entry of (library.assets || [])) {
+            const snap = await docRef(entry.id || entry).get();
+            if (snap.exists) assets.push(unpack(snap.data()));
         }
-
         res.json(assets);
-
     } catch (err) {
-
-        res.status(500).json({
-            error: err.message
-        });
-
+        res.status(500).json({ error: err.message });
     }
-
 });
 
 app.get('/api/files', async (req, res) => {
-
     try {
-
         const library = await getLibrary();
-
         const files = [];
-
-        for (const id of library.files) {
-
-            const snap = await docRef(id).get();
-
-            if (snap.exists) {
-                files.push(
-                    unpack(snap.data())
-                );
-            }
-
+        for (const entry of (library.files || [])) {
+            const snap = await docRef(entry.id || entry).get();
+            if (snap.exists) files.push(unpack(snap.data()));
         }
-
         res.json(files);
-
     } catch (err) {
-
-        res.status(500).json({
-            error: err.message
-        });
-
+        res.status(500).json({ error: err.message });
     }
-
 });
-// ════════════════════════════════════════════════════════
-// LIBRARY
-// ════════════════════════════════════════════════════════
 
-const LIBRARY_KEY = 'library_index';
+// ─── GET /api/templates ───────────────────────────────────────────────────
 
-async function getLibrary() {
-    const snap = await docRef(LIBRARY_KEY).get();
-
-    if (!snap.exists) {
-        return {
-            id: 'library_index',
-            pages: [],
-            files: [],
-            assets: [],
-            services: [],
-            meta: {
-                totalPages: 0,
-                totalFiles: 0,
-                totalAssets: 0,
-                totalServices: 0
-            }
-        };
+app.get('/api/templates', async (req, res) => {
+    try {
+        const library = await getLibrary();
+        res.json(library.templates || []);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
+});
 
-    return unpack(snap.data());
-}
+app.get('/api/jsons', async (req, res) => {
+    try {
+        const library = await getLibrary();
+        res.json(library.jsons || []);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
-async function saveLibrary(library) {
-
-    library.meta = {
-        totalPages: library.pages.length,
-        totalFiles: library.files.length,
-        totalAssets: library.assets.length,
-        totalServices: library.services.length
-    };
-
-    await docRef(LIBRARY_KEY).set(pack(library));
-
-    return library;
-}
+// ════════════════════════════════════════════════════════════════════════
+// BOOTSTRAP
+// ════════════════════════════════════════════════════════════════════════
 
 async function bootstrapLibrary() {
-
     const library = await getLibrary();
 
-    if (
-        library.pages.length ||
-        library.files.length ||
-        library.assets.length ||
-        library.services.length
-    ) {
-        return library;
-    }
+    const hasData = ['pages','files','assets','services','templates','jsons']
+        .some(k => (library[k] || []).length > 0);
+
+    if (hasData) return library;
 
     const now = Date.now();
 
     const pageHome = {
-        id: 'page_home',
-        type: 'page',
-        title: 'Inicio',
-        slug: '/',
-        status: 'published',
-        content: {},
-        createdAt: now,
-        updatedAt: now
+        id: 'page_home', type: 'page',
+        title: 'Inicio', name: 'Inicio',
+        slug: '/', path: null,
+        branch: DEFAULT_BRANCH, sha: null,
+        status: 'published', tags: [],
+        createdAt: now, updatedAt: now,
     };
 
-    const servicePipeline = {
-        id: 'service_pipeline',
-        type: 'service',
-        name: 'Pipeline',
-        status: 'online',
-        createdAt: now,
-        updatedAt: now
-    };
-
-    const serviceGitSync = {
-        id: 'service_gitsync',
-        type: 'service',
-        name: 'GitSync',
-        status: 'online',
-        createdAt: now,
-        updatedAt: now
-    };
-
-    const serviceNim = {
-        id: 'service_nim',
-        type: 'service',
-        name: 'NIM',
-        status: 'offline',
-        createdAt: now,
-        updatedAt: now
-    };
+    const services = [
+        { id: 'service_pipeline', type: 'service', name: 'Pipeline',  title: 'Pipeline',  status: 'online' },
+        { id: 'service_gitsync',  type: 'service', name: 'GitSync',   title: 'GitSync',   status: 'online' },
+        { id: 'service_nim',      type: 'service', name: 'NIM',       title: 'NIM',       status: 'offline' },
+    ].map(s => ({ ...s, slug: null, path: null, branch: DEFAULT_BRANCH, sha: null, tags: [], createdAt: now, updatedAt: now }));
 
     await docRef(pageHome.id).set(pack(pageHome));
-    await docRef(servicePipeline.id).set(pack(servicePipeline));
-    await docRef(serviceGitSync.id).set(pack(serviceGitSync));
-    await docRef(serviceNim.id).set(pack(serviceNim));
+    for (const s of services) await docRef(s.id).set(pack(s));
 
-    library.pages.push(pageHome.id);
-
-    library.services.push(
-        servicePipeline.id,
-        serviceGitSync.id,
-        serviceNim.id
-    );
+    library.pages    = [pageHome];
+    library.services = services;
+    library.templates = library.templates || [];
+    library.jsons     = library.jsons     || [];
 
     await saveLibrary(library);
-
     return library;
 }
+
 // ─── Arranque ────────────────────────────────────────────────────────────
+
 (async () => {
-
     try {
-
         await bootstrapLibrary();
-
-        console.log(
-            '✓ Library initialized'
-        );
-
+        console.log('✓ Library initialized');
     } catch (err) {
-
-        console.error(
-            'Library bootstrap error:',
-            err.message
-        );
-
+        console.error('Library bootstrap error:', err.message);
     }
 
     app.listen(PORT, () => {
-
-        console.log(
-            `✓ Servidor en http://localhost:${PORT}`
-        );
-
-        console.log(
-            `✓ Firestore colección: "${COLLECTION}"`
-        );
-
+        console.log(`✓ Servidor en http://localhost:${PORT}`);
+        console.log(`✓ Firestore colección: "${COLLECTION}"`);
     });
-
 })();
