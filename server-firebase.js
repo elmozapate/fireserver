@@ -276,29 +276,123 @@ app.get('/health', async (req, res) => {
 // ─── POST /set ───────────────────────────────────────────────────────────
 const PATCH_SCHEMAS = {
 
-    config: [
-        'title',
-        'status'
-    ],
+    pages: {
+        config: [
+            'title',
+            'status'
+        ],
 
-    systemload: [
-        'type',
-        'relativePath',
-        'absolutePath',
-        'directory',
-        'size',
-        'content',
-        'fs'
-    ]
+        systemload: [
+            'type',
+            'relativePath',
+            'absolutePath',
+            'directory',
+            'size',
+            'content',
+            'fs'
+        ]
+    },
+
+    files: {
+        config: [
+            'title',
+            'status'
+        ],
+
+        systemload: [
+            'type',
+            'relativePath',
+            'absolutePath',
+            'directory',
+            'size',
+            'content',
+            'fs'
+        ]
+    },
+
+    assets: {
+        config: [
+            'title',
+            'status'
+        ],
+
+        systemload: [
+            'type',
+            'relativePath',
+            'absolutePath',
+            'directory',
+            'size',
+            'content',
+            'fs'
+        ]
+    },
+
+    services: {
+        config: [
+            'title',
+            'status',
+            'config'
+        ],
+
+        systemload: [
+            'type',
+            'config',
+            'logs',
+            'pid',
+            'port',
+            'running'
+        ]
+    },
+
+    meta: {
+        config: [],
+
+        systemload: [
+            'publicDir',
+            'scannedAt',
+            'totalPages',
+            'totalFiles',
+            'totalAssets',
+            'totalServices'
+        ]
+    }
 
 };
-function buildPatchedObject(original, incoming, schema = 'config') {
+
+function resolveSchema(doc) {
+
+    switch (doc.type) {
+
+        case 'page':
+            return 'pages';
+
+        case 'file':
+            return 'files';
+
+        case 'asset':
+            return 'assets';
+
+        case 'service':
+            return 'services';
+
+        default:
+            return 'meta';
+    }
+}
+function buildPatchedObject(
+    original,
+    incoming,
+    schema = 'config'
+) {
+
+    const schemaName =
+        resolveSchema(original || incoming);
 
     const allowedFields =
-        PATCH_SCHEMAS[schema] ||
-        PATCH_SCHEMAS.config;
+        PATCH_SCHEMAS[schemaName]?.[schema] || [];
 
     const result = { ...original };
+
     for (const field of allowedFields) {
         if (field in incoming) {
             result[field] = incoming[field];
@@ -310,21 +404,8 @@ function buildPatchedObject(original, incoming, schema = 'config') {
     return result;
 }
 
-app.post('/set', async (req, res) => {
-    try {
-        const { key, value } = req.body;
-        if (!key) return res.status(400).json({ ok: false, error: 'Key requerida' });
-
-        await docRef(key).set(pack(value));
-        const entry = key !== LIBRARY_KEY ? await syncToLibrary(key, value) : null;
-
-        res.json({ ok: true, key, libraryUpdated: !!entry });
-    } catch (err) {
-        res.status(500).json({ ok: false, error: err.message });
-    }
-});
-
-app.patch('/set', async (req, res) => {
+async function PatchedResponse(req, res, mode = false
+) {
     try {
 
         const {
@@ -375,7 +456,7 @@ app.patch('/set', async (req, res) => {
             finalValue = buildPatchedObject(
                 original,
                 value,
-                schema
+                !!mode? 'config': schema
             );
         }
 
@@ -398,6 +479,27 @@ app.patch('/set', async (req, res) => {
             error: err.message
         });
     }
+}
+
+
+app.post('/set', async (req, res) => {
+    try {
+        const { key, value } = req.body;
+        if (!key) return res.status(400).json({ ok: false, error: 'Key requerida' });
+        if (key === 'llibrary_index') {
+            return await PatchedResponse(req, res, true)
+        }
+        await docRef(key).set(pack(value));
+        const entry = key !== LIBRARY_KEY ? await syncToLibrary(key, value) : null;
+
+        res.json({ ok: true, key, libraryUpdated: !!entry });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+app.patch('/set', async (req, res) => {
+    await PatchedResponse(req, res)
 });
 // ─── GET /get/:key ───────────────────────────────────────────────────────
 
