@@ -838,7 +838,7 @@ app.patch('/api/pages/:id/guest', ensureAuth, async (req, res) => {
             return res.status(404).json({ ok: false, error: `Página '${id}' no encontrada` });
         }
 
-        const slug = page.slug || page.url || page.relativePath || '';
+        const slug = page.relativePath || page.slug || page.url || '';
 
         // Carga config actual
         const snap = await docRef(CONFIG_KEY).get();
