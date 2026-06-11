@@ -704,6 +704,8 @@ app.get('/api/pages', async (req, res) => {
     }
 });
 
+
+
 app.get('/api/services', async (req, res) => {
     try {
         const library = await getLibrary();
@@ -831,29 +833,40 @@ app.patch('/api/config', ensureAuth, async (req, res) => {
 });
 
 // ─── PATCH /api/pages/:id/active ─────────────────────────────────────────
-
 app.patch('/api/pages/:id/active', ensureAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const { activo } = req.body;
 
         if (typeof activo !== 'boolean') {
-            return res.status(400).json({ ok: false, error: 'activo debe ser boolean' });
+            return res.status(400).json({
+                ok: false,
+                error: 'activo debe ser boolean'
+            });
         }
 
         const library = await getLibrary();
-        const idx = library.pages.findIndex(p => p.id === id);
+
+        const idx = library.pages.findIndex(
+            p => p.id === id
+        );
 
         if (idx === -1) {
-            return res.status(404).json({ ok: false, error: `Página '${id}' no encontrada` });
+            return res.status(404).json({
+                ok: false,
+                error: `Página '${id}' no encontrada`
+            });
         }
 
-        library.pages[idx].activo = activo;
+        // Mantener compatibilidad con la ruta y el nombre "activo"
+        library.pages[idx].status = activo
+            ? 'published'
+            : 'draft';
+
         library.pages[idx].updatedAt = Date.now();
 
         await saveLibrary(library);
 
-        // → public: visibilidad de página cambió (afecta a guests también)
         notifySocket({
             entity: 'page',
             room: 'public',
@@ -861,9 +874,19 @@ app.patch('/api/pages/:id/active', ensureAuth, async (req, res) => {
             data: library.pages[idx],
         });
 
-        res.json({ ok: true, id, activo, page: library.pages[idx] });
+        res.json({
+            ok: true,
+            id,
+            activo,
+            status: library.pages[idx].status,
+            page: library.pages[idx]
+        });
+
     } catch (err) {
-        res.status(500).json({ ok: false, error: err.message });
+        res.status(500).json({
+            ok: false,
+            error: err.message
+        });
     }
 });
 
