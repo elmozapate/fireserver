@@ -21,6 +21,7 @@ admin.initializeApp({
 
 const db = admin.firestore();
 const COLLECTION = process.env.FIREBASE_COLLECTION || 'storage';
+const CONFIG_KEY = 'my_prefs';
 
 const app = express();
 const PORT = process.env.PORT || 3090;
@@ -703,6 +704,168 @@ app.get('/api/jsons', async (req, res) => {
     }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH para server-firebase.js
+// Agregar estos dos bloques después de los /api/jsons GET existentes,
+// antes del bloque BOOTSTRAP
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+// ─── GET /api/config ──────────────────────────────────────────────────────────
+// Devuelve la config guardada en my_prefs
+
+app.get('/api/config', async (req, res) => {
+    try {
+        const snap = await docRef(CONFIG_KEY).get();
+        if (!snap.exists) return res.json({});
+        res.json(unpack(snap.data()));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── PUT /api/config ──────────────────────────────────────────────────────────
+// Reemplaza completo el objeto de config en my_prefs
+// Body: el objeto config completo
+
+app.put('/api/config', ensureAuth, async (req, res) => {
+    try {
+        const config = req.body;
+        if (!config || typeof config !== 'object') {
+            return res.status(400).json({ ok: false, error: 'Body debe ser un objeto JSON' });
+        }
+
+        // Actualiza meta.ultimo_guardado y meta.guardado_por
+        if (!config.meta) config.meta = {};
+        config.meta.ultimo_guardado = new Date().toISOString();
+        config.meta.guardado_por = req.user?.uid || req.header('x-uid') || 'admin';
+
+        await docRef(CONFIG_KEY).set(pack(config));
+        res.json({ ok: true, key: CONFIG_KEY, config });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// ─── PATCH /api/config ────────────────────────────────────────────────────────
+// Merge parcial — solo actualiza los campos enviados (deep merge 1 nivel)
+// Body: objeto con los campos a actualizar, ej: { guest: { pagina_guest: '/nueva' } }
+
+app.patch('/api/config', ensureAuth, async (req, res) => {
+    try {
+        const updates = req.body;
+        if (!updates || typeof updates !== 'object') {
+            return res.status(400).json({ ok: false, error: 'Body debe ser un objeto JSON' });
+        }
+
+        // Carga el config actual
+        const snap = await docRef(CONFIG_KEY).get();
+        const current = snap.exists ? unpack(snap.data()) : {};
+
+        // Deep merge primer nivel: fusiona cada sección top-level
+        const merged = { ...current };
+        for (const [section, value] of Object.entries(updates)) {
+            if (section === 'meta') continue; // meta lo maneja el server
+            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                merged[section] = { ...(current[section] || {}), ...value };
+            } else {
+                merged[section] = value;
+            }
+        }
+
+        // Actualiza meta
+        if (!merged.meta) merged.meta = {};
+        merged.meta.ultimo_guardado = new Date().toISOString();
+        merged.meta.guardado_por = req.user?.uid || req.header('x-uid') || 'admin';
+
+        await docRef(CONFIG_KEY).set(pack(merged));
+        res.json({ ok: true, key: CONFIG_KEY, config: merged });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// ─── PATCH /api/pages/:id/active ──────────────────────────────────────────────
+// Activa o desactiva una página dentro de library_index.pages
+// Body: { activo: true | false }
+
+app.patch('/api/pages/:id/active', ensureAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { activo } = req.body;
+
+        if (typeof activo !== 'boolean') {
+            return res.status(400).json({ ok: false, error: 'activo debe ser boolean' });
+        }
+
+        const library = await getLibrary();
+        const idx = library.pages.findIndex(p => p.id === id);
+
+        if (idx === -1) {
+            return res.status(404).json({ ok: false, error: `Página '${id}' no encontrada` });
+        }
+
+        library.pages[idx].activo = activo;
+        library.pages[idx].updatedAt = Date.now();
+
+        await saveLibrary(library);
+
+        res.json({ ok: true, id, activo, page: library.pages[idx] });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// ─── PATCH /api/pages/:id/guest ───────────────────────────────────────────────
+// Marca una página como pagina_guest en my_prefs (config)
+// Body: { set: true | false }
+// Si set=true → config.guest.pagina_guest = page.slug
+// Si set=false → config.guest.pagina_guest = '' y config.guest.activo = false
+
+app.patch('/api/pages/:id/guest', ensureAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { set } = req.body;
+
+        if (typeof set !== 'boolean') {
+            return res.status(400).json({ ok: false, error: 'set debe ser boolean' });
+        }
+
+        // Busca la página para obtener su slug/url
+        const library = await getLibrary();
+        const page = library.pages.find(p => p.id === id);
+        if (!page) {
+            return res.status(404).json({ ok: false, error: `Página '${id}' no encontrada` });
+        }
+
+        const slug = page.slug || page.url || page.relativePath || '';
+
+        // Carga config actual
+        const snap = await docRef(CONFIG_KEY).get();
+        const config = snap.exists ? unpack(snap.data()) : {};
+        if (!config.guest) config.guest = {};
+
+        if (set) {
+            config.guest.pagina_guest = slug;
+            config.guest.activo = true;
+        } else {
+            if (config.guest.pagina_guest === slug) {
+                config.guest.pagina_guest = '';
+                config.guest.activo = false;
+            }
+        }
+
+        if (!config.meta) config.meta = {};
+        config.meta.ultimo_guardado = new Date().toISOString();
+        config.meta.guardado_por = req.user?.uid || req.header('x-uid') || 'admin';
+
+        await docRef(CONFIG_KEY).set(pack(config));
+
+        res.json({ ok: true, id, slug, guest_activo: config.guest.activo, pagina_guest: config.guest.pagina_guest });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
 // ════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════
