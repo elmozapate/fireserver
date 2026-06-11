@@ -37,6 +37,27 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const REPO_NAME = process.env.REPO_NAME || 'writter';
 const API_KEY = process.env.API_KEY || '';
 
+// ─── Socket notifier ──────────────────────────────────────────────────────
+
+const SOCKET_SERVER = process.env.SOCKET_SERVER_URL || 'http://localhost:3000';
+const INTERNAL_SECRET = process.env.INTERNAL_SECRET || 'internal_dev_secret';
+
+/**
+ * Fire-and-forget — nunca bloquea ni lanza excepciones al caller.
+ * room:   'public' | 'authenticated' | cualquier room custom
+ * entity: opcional, para emitEntityUpdated en el otro server
+ */
+function notifySocket({ entity, room, event, data, meta } = {}) {
+    fetch(`${SOCKET_SERVER}/internal/update`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'x-internal-secret': INTERNAL_SECRET,
+        },
+        body: JSON.stringify({ entity, room, event, data, meta }),
+    }).catch(err => console.warn('[socket-notify] fallo silencioso:', err.message));
+}
+
 // ─── Firebase helpers ─────────────────────────────────────────────────────
 
 function safeKey(key) {
@@ -114,8 +135,6 @@ function ensureAuth(req, res, next) {
 
 const LIBRARY_KEY = 'library_index';
 
-// pages/files/assets vienen del scanner externo vía POST /set
-// solo templates, jsons y services se gestionan desde este server
 const TYPE_TO_LIST = {
     service: 'services',
     template: 'templates',
@@ -168,6 +187,14 @@ async function saveLibrary(library) {
         updatedAt: Date.now(),
     };
     await docRef(LIBRARY_KEY).set(pack(library));
+
+    // Notifica a usuarios autenticados que la library cambió
+    notifySocket({
+        room: 'authenticated',
+        event: 'library:updated',
+        data: { meta: library.meta },
+    });
+
     return library;
 }
 
@@ -194,7 +221,7 @@ function buildLibraryEntry(key, value, extra = {}) {
 async function syncToLibrary(key, value, extra = {}) {
     const type = (typeof value === 'object' && value?.type) || extra.type;
     const listName = TYPE_TO_LIST[type];
-    if (!listName) return; // page/file/asset los maneja el scanner, no tocar
+    if (!listName) return;
 
     const library = await getLibrary();
     if (!library[listName]) library[listName] = [];
@@ -229,6 +256,8 @@ async function removeFromLibrary(key) {
     return changed;
 }
 
+// ─── GET /health ──────────────────────────────────────────────────────────
+
 app.get('/health', async (req, res) => {
     try {
         res.json({
@@ -237,16 +266,13 @@ app.get('/health', async (req, res) => {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             uptime: process.uptime(),
-            memory: process.memoryUsage().rss
+            memory: process.memoryUsage().rss,
         });
     } catch (err) {
-        res.status(500).json({
-            ok: false,
-            status: 'unhealthy',
-            error: err.message
-        });
+        res.status(500).json({ ok: false, status: 'unhealthy', error: err.message });
     }
 });
+
 // ─── POST /set ───────────────────────────────────────────────────────────
 
 app.post('/set', async (req, res) => {
@@ -255,8 +281,6 @@ app.post('/set', async (req, res) => {
         if (!key) return res.status(400).json({ ok: false, error: 'Key requerida' });
 
         await docRef(key).set(pack(value));
-
-        // solo sincroniza si es service/template/json; library_index se guarda tal cual
         const entry = key !== LIBRARY_KEY ? await syncToLibrary(key, value) : null;
 
         res.json({ ok: true, key, libraryUpdated: !!entry });
@@ -431,6 +455,14 @@ app.post('/create-template', ensureAuth, async (req, res) => {
             status: 'published',
         });
 
+        // → authenticated: nuevo template disponible
+        notifySocket({
+            entity: 'template',
+            room: 'authenticated',
+            event: 'template:created',
+            data: entry,
+        });
+
         return res.status(200).json({
             ok: true,
             changed: true,
@@ -492,6 +524,13 @@ app.post('/github-push', ensureAuth, async (req, res) => {
                 { ...libraryMeta, path: filePath, branch: targetBranch, sha: data.content?.sha }
             );
         }
+
+        // → authenticated: archivo pusheado a GitHub
+        notifySocket({
+            room: 'authenticated',
+            event: 'file:pushed',
+            data: { path: filePath, branch: targetBranch, sha: data.content?.sha, commit: data.commit?.sha },
+        });
 
         return res.json({
             ok: true,
@@ -574,6 +613,13 @@ app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
 
         const entry = syncValue ? await syncToLibrary(firebaseKey, syncValue) : null;
 
+        // → authenticated: archivo pusheado desde Firebase
+        notifySocket({
+            room: 'authenticated',
+            event: 'file:pushed',
+            data: { firebaseKey, path: filePath, branch: targetBranch, sha: data.content?.sha, commit: data.commit?.sha },
+        });
+
         return res.json({
             ok: true,
             firebaseKey,
@@ -648,7 +694,6 @@ app.delete('/library/remove-entry/:key', ensureAuth, async (req, res) => {
 });
 
 // ─── GET /api/pages ──────────────────────────────────────────────────────
-// pages/files/assets vienen directo del library (scanner los puso ahí)
 
 app.get('/api/pages', async (req, res) => {
     try {
@@ -704,15 +749,7 @@ app.get('/api/jsons', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PATCH para server-firebase.js
-// Agregar estos dos bloques después de los /api/jsons GET existentes,
-// antes del bloque BOOTSTRAP
-// ─────────────────────────────────────────────────────────────────────────────
-
-
-// ─── GET /api/config ──────────────────────────────────────────────────────────
-// Devuelve la config guardada en my_prefs
+// ─── GET /api/config ─────────────────────────────────────────────────────
 
 app.get('/api/config', async (req, res) => {
     try {
@@ -724,9 +761,7 @@ app.get('/api/config', async (req, res) => {
     }
 });
 
-// ─── PUT /api/config ──────────────────────────────────────────────────────────
-// Reemplaza completo el objeto de config en my_prefs
-// Body: el objeto config completo
+// ─── PUT /api/config ─────────────────────────────────────────────────────
 
 app.put('/api/config', ensureAuth, async (req, res) => {
     try {
@@ -735,21 +770,26 @@ app.put('/api/config', ensureAuth, async (req, res) => {
             return res.status(400).json({ ok: false, error: 'Body debe ser un objeto JSON' });
         }
 
-        // Actualiza meta.ultimo_guardado y meta.guardado_por
         if (!config.meta) config.meta = {};
         config.meta.ultimo_guardado = new Date().toISOString();
         config.meta.guardado_por = req.user?.uid || req.header('x-uid') || 'admin';
 
         await docRef(CONFIG_KEY).set(pack(config));
+
+        // → public: config cambiada, todos los clientes deben recargar
+        notifySocket({
+            room: 'public',
+            event: 'config:updated',
+            data: config,
+        });
+
         res.json({ ok: true, key: CONFIG_KEY, config });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
 });
 
-// ─── PATCH /api/config ────────────────────────────────────────────────────────
-// Merge parcial — solo actualiza los campos enviados (deep merge 1 nivel)
-// Body: objeto con los campos a actualizar, ej: { guest: { pagina_guest: '/nueva' } }
+// ─── PATCH /api/config ───────────────────────────────────────────────────
 
 app.patch('/api/config', ensureAuth, async (req, res) => {
     try {
@@ -758,14 +798,12 @@ app.patch('/api/config', ensureAuth, async (req, res) => {
             return res.status(400).json({ ok: false, error: 'Body debe ser un objeto JSON' });
         }
 
-        // Carga el config actual
         const snap = await docRef(CONFIG_KEY).get();
         const current = snap.exists ? unpack(snap.data()) : {};
 
-        // Deep merge primer nivel: fusiona cada sección top-level
         const merged = { ...current };
         for (const [section, value] of Object.entries(updates)) {
-            if (section === 'meta') continue; // meta lo maneja el server
+            if (section === 'meta') continue;
             if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
                 merged[section] = { ...(current[section] || {}), ...value };
             } else {
@@ -773,21 +811,26 @@ app.patch('/api/config', ensureAuth, async (req, res) => {
             }
         }
 
-        // Actualiza meta
         if (!merged.meta) merged.meta = {};
         merged.meta.ultimo_guardado = new Date().toISOString();
         merged.meta.guardado_por = req.user?.uid || req.header('x-uid') || 'admin';
 
         await docRef(CONFIG_KEY).set(pack(merged));
+
+        // → public: config parcialmente actualizada
+        notifySocket({
+            room: 'public',
+            event: 'config:updated',
+            data: merged,
+        });
+
         res.json({ ok: true, key: CONFIG_KEY, config: merged });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
 });
 
-// ─── PATCH /api/pages/:id/active ──────────────────────────────────────────────
-// Activa o desactiva una página dentro de library_index.pages
-// Body: { activo: true | false }
+// ─── PATCH /api/pages/:id/active ─────────────────────────────────────────
 
 app.patch('/api/pages/:id/active', ensureAuth, async (req, res) => {
     try {
@@ -810,17 +853,21 @@ app.patch('/api/pages/:id/active', ensureAuth, async (req, res) => {
 
         await saveLibrary(library);
 
+        // → public: visibilidad de página cambió (afecta a guests también)
+        notifySocket({
+            entity: 'page',
+            room: 'public',
+            event: 'pages:updated',
+            data: library.pages[idx],
+        });
+
         res.json({ ok: true, id, activo, page: library.pages[idx] });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
 });
 
-// ─── PATCH /api/pages/:id/guest ───────────────────────────────────────────────
-// Marca una página como pagina_guest en my_prefs (config)
-// Body: { set: true | false }
-// Si set=true → config.guest.pagina_guest = page.slug
-// Si set=false → config.guest.pagina_guest = '' y config.guest.activo = false
+// ─── PATCH /api/pages/:id/guest ──────────────────────────────────────────
 
 app.patch('/api/pages/:id/guest', ensureAuth, async (req, res) => {
     try {
@@ -831,7 +878,6 @@ app.patch('/api/pages/:id/guest', ensureAuth, async (req, res) => {
             return res.status(400).json({ ok: false, error: 'set debe ser boolean' });
         }
 
-        // Busca la página para obtener su slug/url
         const library = await getLibrary();
         const page = library.pages.find(p => p.id === id);
         if (!page) {
@@ -840,7 +886,6 @@ app.patch('/api/pages/:id/guest', ensureAuth, async (req, res) => {
 
         const slug = page.relativePath || page.slug || page.url || '';
 
-        // Carga config actual
         const snap = await docRef(CONFIG_KEY).get();
         const config = snap.exists ? unpack(snap.data()) : {};
         if (!config.guest) config.guest = {};
@@ -861,11 +906,20 @@ app.patch('/api/pages/:id/guest', ensureAuth, async (req, res) => {
 
         await docRef(CONFIG_KEY).set(pack(config));
 
+        // → public: la página guest cambió, guests deben saber a dónde redirigir
+        notifySocket({
+            entity: 'page',
+            room: 'public',
+            event: 'pages:updated',
+            data: { id, slug, guest_activo: config.guest.activo, pagina_guest: config.guest.pagina_guest },
+        });
+
         res.json({ ok: true, id, slug, guest_activo: config.guest.activo, pagina_guest: config.guest.pagina_guest });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
     }
 });
+
 // ════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════
@@ -898,5 +952,6 @@ async function bootstrapLibrary() {
     app.listen(PORT, () => {
         console.log(`✓ Servidor en http://localhost:${PORT}`);
         console.log(`✓ Firestore colección: "${COLLECTION}"`);
+        console.log(`✓ Socket notify → ${SOCKET_SERVER}`);
     });
 })();
