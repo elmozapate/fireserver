@@ -277,9 +277,12 @@ app.get('/health', async (req, res) => {
 const PATCH_SCHEMAS = {
 
     pages: {
-        config: [
+        admin: [
             'title',
             'status'
+        ],
+        config: [
+            'title',
         ],
 
         systemload: [
@@ -294,9 +297,11 @@ const PATCH_SCHEMAS = {
     },
 
     files: {
-        config: [
+        admin: [
             'title',
-            'status'
+            'status'],
+        config: [
+            'title'
         ],
 
         systemload: [
@@ -311,10 +316,11 @@ const PATCH_SCHEMAS = {
     },
 
     assets: {
-        config: [
+        admin: [
             'title',
-            'status'
-        ],
+            'status'],
+        config: [
+            'title'        ],
 
         systemload: [
             'type',
@@ -328,10 +334,11 @@ const PATCH_SCHEMAS = {
     },
 
     services: {
-        config: [
+        admin: [
             'title',
-            'status',
-            'config'
+            'status'],
+        config: [
+            'title'
         ],
 
         systemload: [
@@ -456,7 +463,7 @@ async function PatchedResponse(req, res, mode = false
             finalValue = buildPatchedObject(
                 original,
                 value,
-                !!mode? 'config': schema
+                !!mode ? 'config' : schema
             );
         }
 
