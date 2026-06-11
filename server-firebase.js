@@ -923,7 +923,35 @@ app.get('/api/pages', async (req, res) => {
     }
 });
 
+app.get('/api/pages_blocked', async (req, res) => {
+    try {
+        const library = await getLibrary();
+        const pages = Array.isArray(library?.pages) ? library.pages : [];
+        res.json(pages.filter(item => item?.status === "draft"));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
+app.get('/api/assets_blocked', async (req, res) => {
+    try {
+        const library = await getLibrary();
+        const assets = Array.isArray(library?.assets) ? library.assets : [];
+        res.json(assets.filter(item => item?.status === "draft"));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/files_blocked', async (req, res) => {
+    try {
+        const library = await getLibrary();
+        const files = Array.isArray(library?.files) ? library.files : [];
+        res.json(files.filter(item => item?.status === "draft"));
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.get('/api/services', async (req, res) => {
     try {
