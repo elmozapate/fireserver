@@ -418,7 +418,7 @@ async function PatchedResponse(req, res, mode = false
         const {
             key,
             value,
-            schema = 'config'
+            schema = 'admin'
         } = req.body;
         if (!key) {
             return res.status(400).json({
