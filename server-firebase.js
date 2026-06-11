@@ -116,9 +116,9 @@ const LIBRARY_KEY = 'library_index';
 // pages/files/assets vienen del scanner externo vía POST /set
 // solo templates, jsons y services se gestionan desde este server
 const TYPE_TO_LIST = {
-    service:  'services',
+    service: 'services',
     template: 'templates',
-    json:     'jsons',
+    json: 'jsons',
 };
 
 async function getLibrary() {
@@ -126,12 +126,12 @@ async function getLibrary() {
     if (!snap.exists) {
         return {
             id: LIBRARY_KEY,
-            pages:     [],
-            files:     [],
-            assets:    [],
-            services:  [],
+            pages: [],
+            files: [],
+            assets: [],
+            services: [],
             templates: [],
-            jsons:     [],
+            jsons: [],
             meta: {
                 totalPages: 0, totalFiles: 0, totalAssets: 0,
                 totalServices: 0, totalTemplates: 0, totalJsons: 0,
@@ -158,12 +158,12 @@ async function getLibraryWithObjects() {
 
 async function saveLibrary(library) {
     library.meta = {
-        totalPages:     (library.pages     || []).length,
-        totalFiles:     (library.files     || []).length,
-        totalAssets:    (library.assets    || []).length,
-        totalServices:  (library.services  || []).length,
+        totalPages: (library.pages || []).length,
+        totalFiles: (library.files || []).length,
+        totalAssets: (library.assets || []).length,
+        totalServices: (library.services || []).length,
         totalTemplates: (library.templates || []).length,
-        totalJsons:     (library.jsons     || []).length,
+        totalJsons: (library.jsons || []).length,
         updatedAt: Date.now(),
     };
     await docRef(LIBRARY_KEY).set(pack(library));
@@ -175,16 +175,16 @@ function buildLibraryEntry(key, value, extra = {}) {
     const existing = typeof value === 'object' && value !== null ? value : {};
 
     return {
-        id:        existing.id        || safeKey(key),
-        type:      existing.type      || extra.type,
-        title:     existing.title     || existing.name || extra.title || key,
-        name:      existing.name      || existing.title || extra.name || key,
-        slug:      existing.slug      || extra.slug  || null,
-        path:      existing.path      || extra.path  || null,
-        branch:    existing.branch    || extra.branch || DEFAULT_BRANCH,
-        sha:       existing.sha       || extra.sha   || null,
-        status:    existing.status    || extra.status || 'active',
-        tags:      existing.tags      || extra.tags  || [],
+        id: existing.id || safeKey(key),
+        type: existing.type || extra.type,
+        title: existing.title || existing.name || extra.title || key,
+        name: existing.name || existing.title || extra.name || key,
+        slug: existing.slug || extra.slug || null,
+        path: existing.path || extra.path || null,
+        branch: existing.branch || extra.branch || DEFAULT_BRANCH,
+        sha: existing.sha || extra.sha || null,
+        status: existing.status || extra.status || 'active',
+        tags: existing.tags || extra.tags || [],
         createdAt: existing.createdAt || extra.createdAt || now,
         updatedAt: now,
     };
@@ -228,6 +228,24 @@ async function removeFromLibrary(key) {
     return changed;
 }
 
+app.get('/health', async (req, res) => {
+    try {
+        res.json({
+            ok: true,
+            service: 'fireserver',
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            uptime: process.uptime(),
+            memory: process.memoryUsage().rss
+        });
+    } catch (err) {
+        res.status(500).json({
+            ok: false,
+            status: 'unhealthy',
+            error: err.message
+        });
+    }
+});
 // ─── POST /set ───────────────────────────────────────────────────────────
 
 app.post('/set', async (req, res) => {
@@ -401,14 +419,14 @@ app.post('/create-template', ensureAuth, async (req, res) => {
         const data = await createRes.json();
 
         const entry = await syncToLibrary(`template_${name}`, {
-            id:     `template_${name}`,
-            type:   'template',
-            title:  name,
+            id: `template_${name}`,
+            type: 'template',
+            title: name,
             name,
-            path:   filePath,
-            slug:   `/${name}.html`,
+            path: filePath,
+            slug: `/${name}.html`,
             branch,
-            sha:    data.content?.sha,
+            sha: data.content?.sha,
             status: 'published',
         });
 
@@ -419,7 +437,7 @@ app.post('/create-template', ensureAuth, async (req, res) => {
             path: filePath,
             url: `/${name}.html`,
             branch,
-            sha:    data.content?.sha,
+            sha: data.content?.sha,
             commit: data.commit?.sha,
             libraryEntry: entry,
         });
@@ -478,7 +496,7 @@ app.post('/github-push', ensureAuth, async (req, res) => {
             ok: true,
             path: filePath,
             branch: targetBranch,
-            sha:    data.content?.sha,
+            sha: data.content?.sha,
             commit: data.commit?.sha,
             updated: !!data.content?.sha,
             libraryEntry: entry,
@@ -522,7 +540,7 @@ app.get('/github-file', ensureAuth, async (req, res) => {
             ok: true,
             path: filePath,
             branch: targetBranch,
-            sha:  data.sha,
+            sha: data.sha,
             size: data.size,
             content,
         });
@@ -536,13 +554,13 @@ app.get('/github-file', ensureAuth, async (req, res) => {
 app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
     const { firebaseKey, path: filePath, branch, message, libraryMeta } = req.body;
     if (!firebaseKey) return res.status(400).json({ ok: false, error: 'firebaseKey is required' });
-    if (!filePath)    return res.status(400).json({ ok: false, error: 'path is required' });
+    if (!filePath) return res.status(400).json({ ok: false, error: 'path is required' });
 
     try {
         const snap = await docRef(firebaseKey).get();
         if (!snap.exists) return res.status(404).json({ ok: false, error: 'Firebase key not found' });
 
-        const value   = unpack(snap.data());
+        const value = unpack(snap.data());
         const content = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
         const targetBranch = branch || DEFAULT_BRANCH;
 
@@ -558,8 +576,8 @@ app.post('/github-push-from-fb', ensureAuth, async (req, res) => {
         return res.json({
             ok: true,
             firebaseKey,
-            path:   filePath,
-            sha:    data.content?.sha,
+            path: filePath,
+            sha: data.content?.sha,
             commit: data.commit?.sha,
             libraryEntry: entry,
         });
