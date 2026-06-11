@@ -274,6 +274,41 @@ app.get('/health', async (req, res) => {
 });
 
 // ─── POST /set ───────────────────────────────────────────────────────────
+const PATCH_SCHEMAS = {
+
+    config: [
+        'title',
+        'status'
+    ],
+
+    systemload: [
+        'type',
+        'relativePath',
+        'absolutePath',
+        'directory',
+        'size',
+        'content',
+        'fs'
+    ]
+
+};
+function buildPatchedObject(original, incoming, schema = 'config') {
+
+    const allowedFields =
+        PATCH_SCHEMAS[schema] ||
+        PATCH_SCHEMAS.config;
+
+    const result = { ...original };
+    for (const field of allowedFields) {
+        if (field in incoming) {
+            result[field] = incoming[field];
+        }
+    }
+
+    result.updatedAt = Date.now();
+
+    return result;
+}
 
 app.post('/set', async (req, res) => {
     try {
@@ -289,6 +324,81 @@ app.post('/set', async (req, res) => {
     }
 });
 
+app.patch('/set', async (req, res) => {
+    try {
+
+        const {
+            key,
+            value,
+            schema = 'config'
+        } = req.body;
+        if (!key) {
+            return res.status(400).json({
+                ok: false,
+                error: 'Key requerida'
+            });
+        }
+
+        const ref = docRef(key);
+
+        const currentSnap = await ref.get();
+        let finalValue = value;
+
+        if (!currentSnap.exists) {
+
+            if (schema !== 'systemload') {
+                return res.status(404).json({
+                    ok: false,
+                    error: 'Documento no existe'
+                });
+            }
+            if (
+                req.headers['x-system-load'] !== 'true' ||
+                req.headers['x-api-key'] !== API_KEY
+            ) {
+                return res.status(403).json({
+                    ok: false,
+                    error: 'Forbidden'
+                });
+            }
+
+            finalValue = {
+                ...value,
+                id: value.id || Date.now(),
+                createdAt: Date.now(),
+                updatedAt: Date.now()
+            };
+        }
+
+        if (currentSnap.exists) {
+            const original = unpack(currentSnap.data());
+            finalValue = buildPatchedObject(
+                original,
+                value,
+                schema
+            );
+        }
+
+        await ref.set(pack(finalValue));
+
+        const entry =
+            key !== LIBRARY_KEY
+                ? await syncToLibrary(key, finalValue)
+                : null;
+
+        res.json({
+            ok: true,
+            key,
+            libraryUpdated: !!entry
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            ok: false,
+            error: err.message
+        });
+    }
+});
 // ─── GET /get/:key ───────────────────────────────────────────────────────
 
 app.get('/get/:key', async (req, res) => {
