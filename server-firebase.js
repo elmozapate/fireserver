@@ -1195,21 +1195,20 @@ app.patch('/api/pages/:id/guest', ensureAuth, async (req, res) => {
     }
 });
 
-// ════════════════════════════════════════════════════════════════════════
-// BOOTSTRAP
-// ════════════════════════════════════════════════════════════════════════
 // ════════════════════════════════════════════════════════
 // BUNDLE SERVER
 // ════════════════════════════════════════════════════════
 
 const BUNDLE_MANIFEST_KEY = 'bundle_manifest';
-const MODULE_CACHE = new Map();   // name → wrapped content string
-const BUNDLE_CACHE_MAP = new Map();   // sorted-key-str → bundle string
+const BUNDLE_PAGES_KEY = 'bundle_pages';
+const MODULE_CACHE = new Map();
+const BUNDLE_CACHE_MAP = new Map();
 const JS_MODULES_BASE = 'public/js_modules';
 
 // ─── Manifest helpers ─────────────────────────────────────────────────────
 
 async function getBundleManifest() {
+
     const snap = await docRef(BUNDLE_MANIFEST_KEY).get();
     if (!snap.exists) return {};
     return unpack(snap.data());
@@ -1225,6 +1224,25 @@ async function saveBundleManifest(manifest) {
         data: { keys: Object.keys(manifest) },
     });
     return manifest;
+}
+
+// ─── Pages helpers ────────────────────────────────────────────────────────
+
+async function getBundlePages() {
+    const snap = await docRef(BUNDLE_PAGES_KEY).get();
+    if (!snap.exists) return {};
+    return unpack(snap.data());
+}
+
+async function saveBundlePages(pages) {
+    await docRef(BUNDLE_PAGES_KEY).set(pack(pages));
+    BUNDLE_CACHE_MAP.clear();
+    notifySocket({
+        room: 'authenticated',
+        event: 'bundle:pages-updated',
+        data: { keys: Object.keys(pages) },
+    });
+    return pages;
 }
 
 // ─── Dependency resolver (topo sort) ─────────────────────────────────────
@@ -1247,20 +1265,17 @@ function topoSort(names, manifest) {
 }
 
 // ─── Module fetcher ───────────────────────────────────────────────────────
+
 async function fetchBundleModule(name, mod) {
     if (MODULE_CACHE.has(name)) return MODULE_CACHE.get(name);
 
-    if (!mod.githubPath) {
-        throw new Error(`Módulo "${name}" no tiene "githubPath"`);
-    }
+    if (!mod.githubPath) throw new Error(`Módulo "${name}" no tiene "githubPath"`);
 
-    // Normaliza: ignora cualquier path que venga en el manifest
-    // y fuerza que el archivo esté en public/js_modules/<filename>
     const filename = mod.githubPath.split('/').pop();
     const resolvedPath = `${JS_MODULES_BASE}/${filename}`;
     const branch = mod.branch || DEFAULT_BRANCH;
 
-    console.log(`[bundle] github: ${resolvedPath}@${branch}`);
+    console.log(`[bundle] fetch: ${resolvedPath}@${branch}`);
 
     const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
     const ghRes = await fetch(apiUrl, {
@@ -1270,68 +1285,146 @@ async function fetchBundleModule(name, mod) {
         },
     });
 
-    if (ghRes.status === 404) throw new Error(`Módulo no encontrado en repo: ${resolvedPath}`);
+    if (ghRes.status === 404) throw new Error(`No encontrado en repo: ${resolvedPath}`);
     if (!ghRes.ok) {
         const err = await ghRes.json();
-        throw new Error(`GitHub error en ${resolvedPath}: ${err.message}`);
+        throw new Error(`GitHub error ${resolvedPath}: ${err.message}`);
     }
 
     const data = await ghRes.json();
-    const raw  = Buffer.from(data.content, 'base64').toString('utf8');
-
+    const raw = Buffer.from(data.content, 'base64').toString('utf8');
     const wrapped = `\n/* ── ${name} (${resolvedPath}) ── */\n${raw}\n`;
+
     MODULE_CACHE.set(name, wrapped);
     return wrapped;
 }
 
+// ─── Bundle builder ───────────────────────────────────────────────────────
+// Recibe lista de nombres ya ordenados, devuelve string JS concatenado
+
+async function buildBundle(orderedNames, manifest) {
+    const parts = await Promise.all(
+        orderedNames.map(name => fetchBundleModule(name, manifest[name]))
+    );
+    return parts.join('');
+}
+
+// ─── Resolver principal ───────────────────────────────────────────────────
+// Combina page config + needs extra y devuelve { head[], body_end[] }
+// respetando el orden declarado y resolviendo deps por topo-sort
+
+async function resolveModules({ page, needs, headerOnly }, manifest, pages) {
+
+    let headMods = [];
+    let bodyEndMods = [];
+
+    // 1. Si viene ?page= cargamos su config
+    if (page) {
+        const cfg = pages[page];
+        if (!cfg) throw new Error(`Página desconocida: "${page}"`);
+        headMods = cfg.head || [];
+        bodyEndMods = cfg.body_end || [];
+    }
+
+    // 2. Si vienen ?needs= extra los agregamos a body_end (sin duplicar)
+    if (needs && needs.length) {
+        const existing = new Set([...headMods, ...bodyEndMods]);
+        for (const n of needs) {
+            if (!existing.has(n)) {
+                bodyEndMods.push(n);
+                existing.add(n);
+            }
+        }
+    }
+
+    // 3. Topo-sort independiente por sección para respetar deps
+    const sortedHead = headMods.length ? topoSort(headMods, manifest) : [];
+    const sortedBodyEnd = bodyEndMods.length ? topoSort(bodyEndMods, manifest) : [];
+
+    // 4. Si solo piden header devolvemos solo esa sección
+    if (headerOnly) {
+        return { head: sortedHead, body_end: [] };
+    }
+
+    return { head: sortedHead, body_end: sortedBodyEnd };
+}
 
 // ─── GET /bundle ──────────────────────────────────────────────────────────
 //
-//  ?needs=utils,dom,ui       → módulos pedidos (deps se resuelven solas)
-//  &nocache=1                → ignora bundle cache
+//  ?needs=a,b,c               → módulos directos en orden
+//  ?page=dabeiba              → preset completo (head + body_end concat)
+//  ?page=dabeiba&header=true  → solo sección head del preset
+//  ?page=dabeiba&needs=a,b    → preset + extras en body_end
+//  &nocache=1                 → salta bundle cache
 //
 app.get('/bundle', async (req, res) => {
+    const pageParam = req.query.page?.trim();
     const needsParam = req.query.needs;
-    if (!needsParam) {
-        return res.status(400).json({ error: 'Falta ?needs=mod1,mod2,...' });
-    }
-
-    const requested = needsParam.split(',').map(s => s.trim()).filter(Boolean);
+    const headerOnly = req.query.header === 'true';
     const nocache = req.query.nocache === '1';
 
+    if (!pageParam && !needsParam) {
+        return res.status(400).json({
+            error: 'Requiere ?needs=mod1,mod2 y/o ?page=nombre'
+        });
+    }
+
+    const needsList = needsParam
+        ? needsParam.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
     try {
-        const manifest = await getBundleManifest();
+        const [manifest, pages] = await Promise.all([
+            getBundleManifest(),
+            pageParam ? getBundlePages() : Promise.resolve({}),
+        ]);
+
         if (!Object.keys(manifest).length) {
-            return res.status(404).json({ error: 'bundle_manifest vacío o inexistente' });
+            return res.status(404).json({ error: 'bundle_manifest vacío' });
         }
 
-        const ordered = topoSort(requested, manifest);
-        const cacheKey = ordered.join('|');
+        const { head, body_end } = await resolveModules(
+            { page: pageParam, needs: needsList, headerOnly },
+            manifest,
+            pages
+        );
+
+        // Cache key incluye la combinación exacta
+        const cacheKey = [
+            pageParam ? `page:${pageParam}` : '',
+            headerOnly ? 'head' : 'full',
+            head.join('+'),
+            body_end.join('+'),
+        ].filter(Boolean).join('|');
 
         if (!nocache && BUNDLE_CACHE_MAP.has(cacheKey)) {
             console.log(`[bundle] cache hit: ${cacheKey}`);
             res.set('Content-Type', 'application/javascript; charset=utf-8');
-            res.set('X-Bundle-Modules', ordered.join(', '));
             res.set('X-Bundle-Cache', 'HIT');
+            res.set('X-Bundle-Head', head.join(', '));
+            res.set('X-Bundle-Body-End', body_end.join(', '));
             return res.send(BUNDLE_CACHE_MAP.get(cacheKey));
         }
 
-        const parts = await Promise.all(
-            ordered.map(name => fetchBundleModule(name, manifest[name]))
-        );
-
+        // Concat: head primero, luego body_end
+        const allOrdered = [...head, ...body_end];
         const header = [
             `/* Bundle: ${new Date().toISOString()} */`,
-            `/* Módulos: ${ordered.join(' → ')} */`,
+            pageParam ? `/* Page: ${pageParam} */` : '',
+            head.length ? `/* Head:     ${head.join(' → ')} */` : '',
+            body_end.length ? `/* Body-end: ${body_end.join(' → ')} */` : '',
             '',
-        ].join('\n');
+        ].filter(l => l !== null).join('\n');
 
-        const bundle = header + parts.join('');
+        const body = await buildBundle(allOrdered, manifest);
+        const bundle = header + body;
+
         BUNDLE_CACHE_MAP.set(cacheKey, bundle);
 
         res.set('Content-Type', 'application/javascript; charset=utf-8');
-        res.set('X-Bundle-Modules', ordered.join(', '));
         res.set('X-Bundle-Cache', 'MISS');
+        res.set('X-Bundle-Head', head.join(', '));
+        res.set('X-Bundle-Body-End', body_end.join(', '));
         res.send(bundle);
 
     } catch (err) {
@@ -1344,15 +1437,25 @@ app.get('/bundle', async (req, res) => {
 
 app.get('/bundle/list', async (req, res) => {
     try {
-        const manifest = await getBundleManifest();
+        const [manifest, pages] = await Promise.all([
+            getBundleManifest(),
+            getBundlePages(),
+        ]);
         res.json({
             ok: true,
+            base: `${GITHUB_USER}/${REPO_NAME}/${JS_MODULES_BASE}`,
             modules: Object.entries(manifest).map(([name, mod]) => ({
                 name,
-                type: mod.url ? 'remote' : mod.firebaseKey ? 'firebase' : 'github',
+                file: mod.githubPath?.split('/').pop(),
+                resolvedPath: `${JS_MODULES_BASE}/${mod.githubPath?.split('/').pop()}`,
+                branch: mod.branch || DEFAULT_BRANCH,
                 deps: mod.deps || [],
-                source: mod.url || mod.firebaseKey || mod.githubPath,
-                branch: mod.branch || null,
+            })),
+            pages: Object.entries(pages).map(([name, cfg]) => ({
+                name,
+                description: cfg.description || '',
+                head: cfg.head || [],
+                body_end: cfg.body_end || [],
             })),
         });
     } catch (err) {
@@ -1361,13 +1464,12 @@ app.get('/bundle/list', async (req, res) => {
 });
 
 // ─── PUT /api/bundle/manifest ────────────────────────────────────────────
-//  Reemplaza el manifest completo
 
 app.put('/api/bundle/manifest', ensureAuth, async (req, res) => {
     try {
         const manifest = req.body;
         if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
-            return res.status(400).json({ ok: false, error: 'Body debe ser objeto JSON { modName: { ... } }' });
+            return res.status(400).json({ ok: false, error: 'Body debe ser objeto { modName: {...} }' });
         }
         await saveBundleManifest(manifest);
         res.json({ ok: true, keys: Object.keys(manifest) });
@@ -1377,19 +1479,16 @@ app.put('/api/bundle/manifest', ensureAuth, async (req, res) => {
 });
 
 // ─── PATCH /api/bundle/manifest ──────────────────────────────────────────
-//  Agrega o actualiza entradas individuales sin tocar las demás
 
 app.patch('/api/bundle/manifest', ensureAuth, async (req, res) => {
     try {
         const updates = req.body;
         if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
-            return res.status(400).json({ ok: false, error: 'Body debe ser objeto { modName: { ... } }' });
+            return res.status(400).json({ ok: false, error: 'Body debe ser objeto { modName: {...} }' });
         }
-
         const current = await getBundleManifest();
         const merged = { ...current, ...updates };
         await saveBundleManifest(merged);
-
         res.json({ ok: true, updated: Object.keys(updates), total: Object.keys(merged).length });
     } catch (err) {
         res.status(500).json({ ok: false, error: err.message });
@@ -1413,6 +1512,71 @@ app.delete('/api/bundle/manifest/:name', ensureAuth, async (req, res) => {
     }
 });
 
+// ─── PUT /api/bundle/pages ───────────────────────────────────────────────
+// Reemplaza todas las páginas
+
+app.put('/api/bundle/pages', ensureAuth, async (req, res) => {
+    try {
+        const pages = req.body;
+        if (!pages || typeof pages !== 'object' || Array.isArray(pages)) {
+            return res.status(400).json({ ok: false, error: 'Body debe ser objeto { pageName: {...} }' });
+        }
+        await saveBundlePages(pages);
+        res.json({ ok: true, keys: Object.keys(pages) });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// ─── PATCH /api/bundle/pages ─────────────────────────────────────────────
+// Agrega o actualiza páginas individuales
+
+app.patch('/api/bundle/pages', ensureAuth, async (req, res) => {
+    try {
+        const updates = req.body;
+        if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+            return res.status(400).json({ ok: false, error: 'Body debe ser objeto { pageName: {...} }' });
+        }
+        const current = await getBundlePages();
+        const merged = { ...current, ...updates };
+        await saveBundlePages(merged);
+        res.json({ ok: true, updated: Object.keys(updates), total: Object.keys(merged).length });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// ─── DELETE /api/bundle/pages/:name ──────────────────────────────────────
+
+app.delete('/api/bundle/pages/:name', ensureAuth, async (req, res) => {
+    try {
+        const { name } = req.params;
+        const current = await getBundlePages();
+        if (!(name in current)) {
+            return res.status(404).json({ ok: false, error: `Página "${name}" no existe` });
+        }
+        delete current[name];
+        await saveBundlePages(current);
+        res.json({ ok: true, deleted: name, remaining: Object.keys(current).length });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
+// ─── GET /api/bundle/pages/:name ─────────────────────────────────────────
+// Info de una página específica sin generar bundle
+
+app.get('/api/bundle/pages/:name', async (req, res) => {
+    try {
+        const pages = await getBundlePages();
+        const cfg = pages[req.params.name];
+        if (!cfg) return res.status(404).json({ ok: false, error: `Página "${req.params.name}" no existe` });
+        res.json({ ok: true, name: req.params.name, ...cfg });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
+
 // ─── POST /bundle/invalidate ─────────────────────────────────────────────
 
 app.post('/bundle/invalidate', ensureAuth, async (req, res) => {
@@ -1422,6 +1586,13 @@ app.post('/bundle/invalidate', ensureAuth, async (req, res) => {
     BUNDLE_CACHE_MAP.clear();
     res.json({ ok: true, cleared: { modules: mc, bundles: bc } });
 });
+
+
+// ════════════════════════════════════════════════════════════════════════
+// BOOTSTRAP
+// ════════════════════════════════════════════════════════════════════════
+
+
 async function bootstrapLibrary() {
     const snap = await docRef(LIBRARY_KEY).get();
     if (!snap.exists) {
@@ -1435,8 +1606,6 @@ async function bootstrapLibrary() {
     }
     return unpack(snap.data());
 }
-
-// ─── Arranque ────────────────────────────────────────────────────────────
 
 (async () => {
     try {
