@@ -3,955 +3,1212 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Bundle Admin</title>
+<title>Bundle Tester</title>
 <style>
-  :root {
-    --bg:       #0f0f0f;
-    --surface:  #181818;
-    --surface2: #212121;
-    --border:   #2a2a2a;
-    --border2:  #363636;
-    --accent:   #7c6ef0;
-    --accent2:  #5c50c8;
-    --text:     #e8e6f0;
-    --muted:    #6b6880;
-    --ok:       #4caf82;
-    --err:      #e05a5a;
-    --warn:     #d4943a;
-    --mono:     'DM Mono', 'Fira Mono', monospace;
-    --sans:     'Inter', system-ui, sans-serif;
-  }
+:root {
+  --bg:     #0d0d0f;
+  --s:      #13131a;
+  --s2:     #1a1a24;
+  --s3:     #20202c;
+  --b:      #262636;
+  --b2:     #32324a;
+  --a:      #7c6ef0;
+  --a2:     #5c50c8;
+  --a3:     #3d3580;
+  --t:      #e4e2f4;
+  --t2:     #9896b4;
+  --t3:     #5a5874;
+  --ok:     #3ecf82;
+  --ok2:    #1a5c3a;
+  --er:     #e05565;
+  --er2:    #5c1a24;
+  --warn:   #d49a3a;
+  --head-c: #60b4f0;
+  --body-c: #a06ef0;
+  --mn: 'DM Mono', 'Fira Mono', 'Consolas', monospace;
+  --ss: system-ui, -apple-system, sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--t);font-family:var(--mn);font-size:12px;display:flex;flex-direction:column}
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--b2);border-radius:2px}
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 13px;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
+/* ── Header ── */
+.hdr{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 16px;
+  background:var(--s);
+  border-bottom:1px solid var(--b);
+  flex-shrink:0;
+}
+.hdr-logo{font-size:11px;letter-spacing:.14em;color:var(--a);text-transform:uppercase}
+.hdr-sep{flex:1}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--t3);transition:background .3s,box-shadow .3s;flex-shrink:0}
+.dot.ok{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.dot.er{background:var(--er)}
+.dot.ld{background:var(--warn);animation:pulse .8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+#status-lbl{font-size:10px;color:var(--t3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-  /* ── Header ── */
-  header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 14px 24px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-  }
+/* ── Connection bar ── */
+.conn{
+  display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+  padding:8px 16px;
+  background:var(--s2);
+  border-bottom:1px solid var(--b);
+  flex-shrink:0;
+}
+.conn label{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.07em;white-space:nowrap}
 
-  header .logo {
-    font-family: var(--mono);
-    font-size: 11px;
-    letter-spacing: .12em;
-    color: var(--accent);
-    text-transform: uppercase;
-  }
+/* ── Layout ── */
+.layout{display:grid;grid-template-columns:260px 1fr;flex:1;min-height:0;overflow:hidden}
 
-  header .sep { flex: 1; }
+/* ── Sidebar ── */
+.side{
+  border-right:1px solid var(--b);
+  display:flex;flex-direction:column;
+  background:var(--s);
+  overflow:hidden;
+}
+.side-tabs{display:flex;border-bottom:1px solid var(--b);flex-shrink:0}
+.side-tab{
+  flex:1;padding:8px 4px;text-align:center;font-size:10px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--t3);cursor:pointer;
+  border-bottom:2px solid transparent;transition:all .15s;
+}
+.side-tab.active{color:var(--a);border-bottom-color:var(--a)}
+.side-tab:hover:not(.active){color:var(--t2)}
 
-  #status-dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--muted);
-    transition: background .3s;
-  }
-  #status-dot.ok  { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
-  #status-dot.err { background: var(--err); }
+.side-search{padding:8px;border-bottom:1px solid var(--b);flex-shrink:0}
+.side-list{flex:1;overflow-y:auto;padding:4px}
 
-  #status-label {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-  }
+/* ── List items ── */
+.item{
+  display:flex;align-items:center;gap:6px;
+  padding:7px 8px;border-radius:5px;cursor:pointer;
+  border:1px solid transparent;transition:all .12s;
+  margin-bottom:1px;
+}
+.item:hover{background:var(--s2);border-color:var(--b)}
+.item.active{background:#1a1630;border-color:var(--a3)}
+.item.selected-head{background:#0e1a28;border-color:#2a4a6a}
+.item.selected-body{background:#160e2a;border-color:#3a2a6a}
 
-  /* ── Auth bar ── */
-  #auth-bar {
-    display: flex;
-    gap: 8px;
-    padding: 10px 24px;
-    background: var(--surface2);
-    border-bottom: 1px solid var(--border);
-    align-items: center;
-  }
+.item-icon{font-size:9px;color:var(--t3);width:16px;text-align:center;flex-shrink:0;font-family:var(--mn)}
+.item-name{flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.item-badge{
+  font-size:9px;padding:1px 5px;border-radius:3px;
+  background:var(--b);color:var(--t3);white-space:nowrap;
+}
+.item-badge.head{background:#0e1a28;color:var(--head-c)}
+.item-badge.body{background:#160e2a;color:var(--body-c)}
 
-  #auth-bar label {
-    font-size: 11px;
-    color: var(--muted);
-    font-family: var(--mono);
-    white-space: nowrap;
-  }
+.side-footer{padding:8px;border-top:1px solid var(--b);flex-shrink:0;display:flex;gap:5px}
 
-  /* ── Layout ── */
-  .layout {
-    display: grid;
-    grid-template-columns: 300px 1fr;
-    flex: 1;
-    min-height: 0;
-  }
+/* ── Main ── */
+.main{display:flex;flex-direction:column;overflow:hidden;min-height:0}
 
-  /* ── Sidebar ── */
-  .sidebar {
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    background: var(--surface);
-  }
+/* ── Top tabs ── */
+.main-tabs{display:flex;border-bottom:1px solid var(--b);background:var(--s);flex-shrink:0}
+.main-tab{
+  padding:9px 16px;font-size:11px;color:var(--t3);cursor:pointer;
+  border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap;
+}
+.main-tab.active{color:var(--t);border-bottom-color:var(--a)}
+.main-tab:hover:not(.active){color:var(--t2)}
 
-  .sidebar-header {
-    padding: 14px 16px 10px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    border-bottom: 1px solid var(--border);
-  }
+/* ── Panel ── */
+.panel{flex:1;overflow-y:auto;padding:16px;display:none}
+.panel.active{display:block}
 
-  .sidebar-header h2 {
-    font-size: 11px;
-    font-family: var(--mono);
-    letter-spacing: .1em;
-    color: var(--muted);
-    text-transform: uppercase;
-  }
+/* ── Inputs ── */
+input,select,textarea{
+  background:var(--s2);border:1px solid var(--b);color:var(--t);
+  border-radius:5px;padding:7px 9px;font-family:var(--mn);font-size:11px;
+  outline:none;transition:border-color .15s;width:100%;
+}
+input:focus,select:focus,textarea:focus{border-color:var(--a)}
+textarea{resize:vertical;min-height:60px}
+select option{background:var(--s2)}
 
-  #module-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px;
-  }
+/* ── Buttons ── */
+.btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:6px 12px;border-radius:5px;border:none;
+  font-family:var(--mn);font-size:11px;cursor:pointer;
+  transition:all .14s;white-space:nowrap;flex-shrink:0;
+}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-p{background:var(--a);color:#fff}
+.btn-p:hover:not(:disabled){background:var(--a2)}
+.btn-g{background:transparent;color:var(--t2);border:1px solid var(--b)}
+.btn-g:hover:not(:disabled){border-color:var(--b2);color:var(--t)}
+.btn-ok{background:transparent;color:var(--ok);border:1px solid var(--ok2)}
+.btn-ok:hover:not(:disabled){background:#0a2018}
+.btn-er{background:transparent;color:var(--er);border:1px solid var(--er2)}
+.btn-er:hover:not(:disabled){background:#200a10}
+.btn-head{background:#0e1a28;color:var(--head-c);border:1px solid #2a4a6a}
+.btn-head:hover:not(:disabled){background:#142030}
+.btn-body{background:#160e2a;color:var(--body-c);border:1px solid #3a2a6a}
+.btn-body:hover:not(:disabled){background:#1e1436}
+.btn-sm{padding:4px 9px;font-size:10px}
+.btn-xs{padding:2px 7px;font-size:10px}
 
-  .mod-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px;
-    border-radius: 6px;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: all .15s;
-    margin-bottom: 2px;
-  }
+/* ── Row helpers ── */
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.col{display:flex;flex-direction:column;gap:5px}
+.fg{display:flex;flex-direction:column;gap:4px}
+.fg label{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.07em}
+.fg .hint{font-size:10px;color:var(--t3);margin-top:-1px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.full{grid-column:1/-1}
 
-  .mod-item:hover { background: var(--surface2); border-color: var(--border); }
+/* ── Section ── */
+.sec{margin-bottom:18px}
+.sec-label{font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px}
+.divider{border:none;border-top:1px solid var(--b);margin:14px 0}
 
-  .mod-item.active {
-    background: #1e1a3a;
-    border-color: var(--accent);
-  }
+/* ── Tags ── */
+.tags{display:flex;flex-wrap:wrap;gap:5px}
+.tag{
+  display:inline-flex;align-items:center;gap:3px;
+  padding:3px 8px;border-radius:4px;font-size:10px;cursor:pointer;
+  transition:all .12s;
+}
+.tag-mod{background:var(--s3);border:1px solid var(--b);color:var(--t2)}
+.tag-mod:hover{border-color:var(--a3);color:var(--a)}
+.tag-head{background:#0e1a28;border:1px solid #2a4a6a;color:var(--head-c)}
+.tag-body{background:#160e2a;border:1px solid #3a2a6a;color:var(--body-c)}
+.tag-rem{background:none;border:none;color:inherit;cursor:pointer;font-size:11px;padding:0;line-height:1;opacity:.7}
+.tag-rem:hover{opacity:1}
 
-  .mod-icon {
-    font-family: var(--mono);
-    font-size: 10px;
-    color: var(--accent);
-    width: 18px;
-    text-align: center;
-    flex-shrink: 0;
-  }
+/* ── Sortable list ── */
+.sort-list{display:flex;flex-direction:column;gap:3px}
+.sort-item{
+  display:flex;align-items:center;gap:6px;
+  padding:5px 8px;border-radius:4px;background:var(--s3);
+  border:1px solid var(--b);cursor:grab;
+  font-size:11px;
+}
+.sort-item:active{cursor:grabbing}
+.sort-handle{color:var(--t3);font-size:10px;cursor:grab;user-select:none}
+.sort-idx{color:var(--t3);font-size:9px;width:14px;text-align:right}
 
-  .mod-name {
-    flex: 1;
-    font-family: var(--mono);
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+/* ── URL box ── */
+.url-box{
+  padding:8px 10px;background:var(--s2);border:1px solid var(--b);
+  border-radius:5px;font-size:11px;color:var(--t2);
+  word-break:break-all;cursor:pointer;transition:border-color .15s;
+  line-height:1.6;
+}
+.url-box:hover{border-color:var(--a)}
+.url-box .param-page{color:var(--a)}
+.url-box .param-head{color:var(--head-c)}
+.url-box .param-body{color:var(--body-c)}
+.url-box .param-needs{color:var(--ok)}
 
-  .mod-deps-badge {
-    font-size: 10px;
-    color: var(--muted);
-    background: var(--border);
-    padding: 1px 5px;
-    border-radius: 3px;
-    font-family: var(--mono);
-  }
+/* ── Output ── */
+.out{
+  font-size:11px;padding:10px;background:var(--s2);border:1px solid var(--b);
+  border-radius:5px;white-space:pre-wrap;word-break:break-all;
+  line-height:1.6;color:var(--t2);min-height:50px;max-height:260px;overflow-y:auto;
+}
+.out.ok{border-color:var(--ok2);color:var(--ok)}
+.out.er{border-color:var(--er2);color:var(--er)}
 
-  .sidebar-footer {
-    padding: 10px 8px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    gap: 6px;
-  }
+/* ── Chips ── */
+.chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
+.chip{padding:2px 8px;border-radius:4px;font-size:10px;border:1px solid var(--b);color:var(--t2)}
+.chip.ok{border-color:var(--ok2);color:var(--ok)}
+.chip.er{border-color:var(--er2);color:var(--er)}
+.chip.hit{border-color:#2a4a2a;color:var(--ok)}
+.chip.mis{border-color:var(--b);color:var(--t3)}
 
-  /* ── Main panel ── */
-  .main {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
+/* ── Empty ── */
+.empty{
+  display:flex;flex-direction:column;align-items:center;
+  justify-content:center;height:100%;gap:8px;color:var(--t3);
+  text-align:center;padding:20px;
+}
+.empty-g{font-size:28px;margin-bottom:4px;color:var(--b2)}
 
-  .panel-header {
-    padding: 14px 24px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    background: var(--surface);
-  }
+/* ── Spin ── */
+.spin{
+  display:inline-block;width:11px;height:11px;
+  border:2px solid var(--b2);border-top-color:var(--a);
+  border-radius:50%;animation:sp .55s linear infinite;flex-shrink:0;
+}
+@keyframes sp{to{transform:rotate(360deg)}}
 
-  .panel-header h1 {
-    font-size: 14px;
-    font-weight: 500;
-    font-family: var(--mono);
-    flex: 1;
-  }
+/* ── Toast ── */
+#toast{
+  position:fixed;bottom:16px;right:16px;
+  padding:8px 14px;border-radius:6px;font-size:11px;
+  display:none;z-index:999;max-width:300px;border:1px solid;
+}
+#toast.ok{background:#0a2018;border-color:var(--ok);color:var(--ok)}
+#toast.er{background:#200a10;border-color:var(--er);color:var(--er)}
+#toast.warn{background:#1a1008;border-color:var(--warn);color:var(--warn)}
 
-  .panel-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: 24px;
-  }
+/* ── Page card ── */
+.page-card{
+  background:var(--s2);border:1px solid var(--b);border-radius:6px;
+  padding:10px 12px;margin-bottom:6px;cursor:pointer;transition:all .12s;
+}
+.page-card:hover{border-color:var(--b2)}
+.page-card.active{border-color:var(--a3);background:#1a1630}
+.page-card-name{font-size:12px;color:var(--t);margin-bottom:3px}
+.page-card-desc{font-size:10px;color:var(--t3);margin-bottom:6px}
+.page-card-slots{display:flex;gap:5px;flex-wrap:wrap}
 
-  /* ── Empty state ── */
-  .empty {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    gap: 12px;
-    color: var(--muted);
-  }
+/* ── Inline checkbox toggle ── */
+.toggle-row{display:flex;align-items:center;gap:8px}
+.toggle-row input[type=checkbox]{width:auto;padding:0}
 
-  .empty-glyph {
-    font-family: var(--mono);
-    font-size: 32px;
-    color: var(--border2);
-  }
+/* ── Section slot ── */
+.slot{
+  border:1px solid var(--b);border-radius:5px;padding:8px;
+  background:var(--s3);min-height:38px;
+}
+.slot-head{border-color:#2a4a6a}
+.slot-body{border-color:#3a2a6a}
+.slot-label{font-size:9px;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px}
+.slot-label.h{color:var(--head-c)}
+.slot-label.b{color:var(--body-c)}
 
-  .empty p { font-size: 12px; }
-
-  /* ── Form ── */
-  .form-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    max-width: 680px;
-  }
-
-  .form-group {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .form-group.full { grid-column: 1 / -1; }
-
-  .form-group label {
-    font-size: 10px;
-    font-family: var(--mono);
-    letter-spacing: .08em;
-    color: var(--muted);
-    text-transform: uppercase;
-  }
-
-  .form-group .hint {
-    font-size: 10px;
-    color: var(--muted);
-    margin-top: -2px;
-  }
-
-  /* ── Inputs ── */
-  input, select, textarea {
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 8px 10px;
-    font-family: var(--mono);
-    font-size: 12px;
-    width: 100%;
-    transition: border-color .15s;
-    outline: none;
-  }
-
-  input:focus, select:focus, textarea:focus {
-    border-color: var(--accent);
-  }
-
-  textarea { resize: vertical; min-height: 80px; }
-
-  select option { background: var(--surface2); }
-
-  /* ── Deps tags ── */
-  .deps-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 6px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    min-height: 38px;
-  }
-
-  .dep-tag {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: #1e1a3a;
-    border: 1px solid var(--accent);
-    color: var(--accent);
-    font-family: var(--mono);
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 4px;
-  }
-
-  .dep-tag button {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 12px;
-    padding: 0;
-    line-height: 1;
-  }
-
-  .dep-add {
-    display: flex;
-    gap: 6px;
-    margin-top: 6px;
-  }
-
-  /* ── Buttons ── */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 14px;
-    border-radius: 6px;
-    border: none;
-    font-family: var(--mono);
-    font-size: 12px;
-    cursor: pointer;
-    transition: all .15s;
-    white-space: nowrap;
-  }
-
-  .btn:disabled { opacity: .4; cursor: not-allowed; }
-
-  .btn-primary {
-    background: var(--accent);
-    color: #fff;
-  }
-  .btn-primary:hover:not(:disabled) { background: var(--accent2); }
-
-  .btn-ghost {
-    background: transparent;
-    color: var(--muted);
-    border: 1px solid var(--border);
-  }
-  .btn-ghost:hover:not(:disabled) { border-color: var(--border2); color: var(--text); }
-
-  .btn-danger {
-    background: transparent;
-    color: var(--err);
-    border: 1px solid #3a2020;
-  }
-  .btn-danger:hover:not(:disabled) { background: #2a1414; }
-
-  .btn-ok {
-    background: transparent;
-    color: var(--ok);
-    border: 1px solid #1a3028;
-  }
-  .btn-ok:hover:not(:disabled) { background: #0f2018; }
-
-  .btn-sm { padding: 5px 10px; font-size: 11px; }
-
-  /* ── Divider ── */
-  .divider {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 20px 0;
-  }
-
-  /* ── Section label ── */
-  .section-label {
-    font-size: 10px;
-    font-family: var(--mono);
-    letter-spacing: .1em;
-    color: var(--muted);
-    text-transform: uppercase;
-    margin-bottom: 12px;
-  }
-
-  /* ── Toast ── */
-  #toast {
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    padding: 10px 16px;
-    border-radius: 8px;
-    font-family: var(--mono);
-    font-size: 12px;
-    display: none;
-    z-index: 999;
-    max-width: 340px;
-    border: 1px solid;
-  }
-
-  #toast.ok  { background: #0f2018; border-color: var(--ok);  color: var(--ok); }
-  #toast.err { background: #2a1414; border-color: var(--err); color: var(--err); }
-  #toast.warn { background: #201a0a; border-color: var(--warn); color: var(--warn); }
-
-  /* ── Bundle tester ── */
-  .test-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-
-  .test-output {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 8px;
-    padding: 10px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    min-height: 40px;
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
-
-  /* ── Info row ── */
-  .info-row {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--muted);
-    margin-bottom: 16px;
-    flex-wrap: wrap;
-  }
-
-  .info-chip {
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: var(--surface2);
-    border: 1px solid var(--border);
-    color: var(--text);
-  }
-
-  /* ── Scrollbar ── */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
-
-  /* ── Loader spinner ── */
-  .spin {
-    display: inline-block;
-    width: 12px; height: 12px;
-    border: 2px solid var(--border2);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin .6s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
+/* ── Info pill ── */
+.info-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:10px;padding:2px 7px;border-radius:3px;
+  background:var(--s3);border:1px solid var(--b);color:var(--t3);
+}
 </style>
 </head>
 <body>
 
-<header>
-  <span class="logo">⬡ Bundle Admin</span>
-  <span class="sep"></span>
-  <div id="status-dot"></div>
-  <span id="status-label">—</span>
-</header>
-
-<div id="auth-bar">
-  <label>SERVER</label>
-  <input id="server-url" type="text" value="https://fireserver.onrender.com" style="width:240px"/>
-  <label style="margin-left:8px">API KEY</label>
-  <input id="api-key" type="password" placeholder="x-api-key" style="width:180px"/>
-  <button class="btn btn-ghost btn-sm" onclick="loadModules()">Conectar</button>
-  <span class="sep"></span>
-  <button class="btn btn-ghost btn-sm" onclick="openTestPanel()">Probar bundle</button>
-  <button class="btn btn-ghost btn-sm" onclick="invalidateCache()">Invalidar cache</button>
+<!-- Header -->
+<div class="hdr">
+  <span class="hdr-logo">⬡ Bundle Tester</span>
+  <span class="hdr-sep"></span>
+  <div class="dot" id="dot"></div>
+  <span id="status-lbl">sin conectar</span>
 </div>
 
+<!-- Connection bar -->
+<div class="conn">
+  <label>Servidor</label>
+  <input id="srv" type="text" value="https://fireserver.onrender.com" style="width:260px"/>
+  <label style="margin-left:6px">API Key</label>
+  <input id="apikey" type="password" value="mi_clave_privadas" placeholder="x-api-key" style="width:160px"/>
+<button
+  id="connect-btn"
+  class="btn btn-p btn-sm"
+  onclick="connect()">
+  Conectar
+</button>  <span class="hdr-sep"></span>
+  <button class="btn btn-g btn-sm" onclick="invalidate()">↺ Invalidar cache</button>
+</div>
+
+<!-- Layout -->
 <div class="layout">
 
-  <!-- Sidebar -->
-  <aside class="sidebar">
-    <div class="sidebar-header">
-      <h2>Módulos <span id="mod-count" style="color:var(--text)"></span></h2>
-      <div class="spin" id="list-spin" style="display:none"></div>
-    </div>
-    <div id="module-list">
-      <div class="empty" style="height:200px">
-        <span class="empty-glyph">{ }</span>
-        <p>Conecta para ver módulos</p>
-      </div>
-    </div>
-    <div class="sidebar-footer">
-      <button class="btn btn-primary btn-sm" style="flex:1" onclick="newModule()">+ Nuevo</button>
-      <button class="btn btn-ghost btn-sm" onclick="loadModules()">↻</button>
-    </div>
-  </aside>
-
-  <!-- Main -->
-  <main class="main">
-    <div class="panel-header">
-      <h1 id="panel-title" style="color:var(--muted)">— selecciona un módulo —</h1>
-      <div id="panel-actions" style="display:flex;gap:8px"></div>
-    </div>
-    <div class="panel-body" id="panel-body">
-      <div class="empty">
-        <span class="empty-glyph">⬡</span>
-        <p>Selecciona un módulo en la lista o crea uno nuevo</p>
-      </div>
-    </div>
-  </main>
-
+<!-- Sidebar -->
+<div class="side">
+  <div class="side-tabs">
+    <div class="side-tab active" id="stab-mods" onclick="sideTab('mods')">Módulos</div>
+    <div class="side-tab" id="stab-pages" onclick="sideTab('pages')">Páginas</div>
+  </div>
+  <div class="side-search">
+    <input id="side-search" placeholder="Buscar…" oninput="filterSide()"/>
+  </div>
+  <div class="side-list" id="side-list">
+    <div class="empty"><span class="empty-g">{ }</span><p>Conecta para ver datos</p></div>
+  </div>
+  <div class="side-footer">
+    <button class="btn btn-p btn-sm" style="flex:1" onclick="newItem()">+ Nuevo</button>
+    <button class="btn btn-g btn-sm" onclick="connect()">↻</button>
+  </div>
 </div>
+
+<!-- Main -->
+<div class="main">
+  <div class="main-tabs">
+    <div class="main-tab active" id="mtab-editor" onclick="mainTab('editor')">Editor</div>
+    <div class="main-tab" id="mtab-tester" onclick="mainTab('tester')">Tester</div>
+    <div class="main-tab" id="mtab-url" onclick="mainTab('url')">Constructor URL</div>
+  </div>
+
+  <!-- Panel: Editor -->
+  <div class="panel active" id="panel-editor">
+    <div class="empty" id="editor-empty">
+      <span class="empty-g">⬡</span>
+      <p>Selecciona un módulo o página para editar<br>o crea uno nuevo con + Nuevo</p>
+    </div>
+    <div id="editor-content" style="display:none;max-width:640px"></div>
+  </div>
+
+  <!-- Panel: Tester -->
+  <div class="panel" id="panel-tester">
+    <div class="sec">
+      <div class="sec-label">Modo de prueba</div>
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn btn-g btn-sm" onclick="setTesterMode('needs')" id="tmode-needs">?needs=</button>
+        <button class="btn btn-g btn-sm" onclick="setTesterMode('page')" id="tmode-page">?page=</button>
+        <button class="btn btn-g btn-sm" onclick="setTesterMode('combo')" id="tmode-combo">Combinado</button>
+      </div>
+
+      <div id="tester-needs-row" class="fg" style="margin-bottom:10px">
+        <label>Módulos (?needs=)</label>
+        <div class="row">
+          <input id="t-needs" style="flex:1" placeholder="arqueomain,screenSmart" oninput="buildTestUrl()"/>
+          <button class="btn btn-g btn-sm" onclick="clearNeeds()">✕</button>
+        </div>
+        <div class="tags" id="t-mod-tags" style="margin-top:6px"></div>
+      </div>
+
+      <div id="tester-page-row" class="fg" style="margin-bottom:10px;display:none">
+        <label>Página (?page=)</label>
+        <div class="row">
+          <select id="t-page" onchange="buildTestUrl()" style="flex:1">
+            <option value="">— seleccionar página —</option>
+          </select>
+          <label class="toggle-row" style="white-space:nowrap">
+            <input type="checkbox" id="t-header" onchange="buildTestUrl()"/> solo head
+          </label>
+        </div>
+      </div>
+
+      <div id="tester-extra-row" class="fg" style="margin-bottom:10px;display:none">
+        <label>Módulos extra (?needs= adicionales)</label>
+        <input id="t-extra" placeholder="listenermodal,nexus-frame-sdk" oninput="buildTestUrl()"/>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="url-box" id="t-url" onclick="copyUrl()">—</div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn-p" id="btn-run" onclick="runTest()">▷ Generar</button>
+        <button class="btn btn-g" onclick="openTab()">↗ Pestaña</button>
+        <button class="btn btn-g" onclick="injectScript()">⬡ Inyectar</button>
+        <label class="toggle-row" style="margin-left:auto;font-size:10px;color:var(--t3)">
+          <input type="checkbox" id="t-nocache" onchange="buildTestUrl()"/> nocache
+        </label>
+        <div class="spin" id="t-spin" style="display:none"></div>
+      </div>
+    </div>
+
+    <div class="chips" id="t-chips" style="display:none"></div>
+    <div class="out" id="t-out">Resultado aquí…</div>
+  </div>
+
+  <!-- Panel: URL Builder -->
+  <div class="panel" id="panel-url">
+    <div class="sec">
+      <div class="sec-label">Construye tu URL de bundle</div>
+      <div class="grid2" style="margin-bottom:10px">
+        <div class="fg">
+          <label>Página (opcional)</label>
+          <select id="u-page" onchange="buildUrlPanel()">
+            <option value="">— sin página —</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label>Opciones</label>
+          <div class="col" style="gap:4px;padding-top:4px">
+            <label class="toggle-row"><input type="checkbox" id="u-header" onchange="buildUrlPanel()"/> solo &header=true</label>
+            <label class="toggle-row"><input type="checkbox" id="u-nocache" onchange="buildUrlPanel()"/> &nocache=1</label>
+          </div>
+        </div>
+        <div class="fg full">
+          <label>Módulos extra (?needs=) — click para agregar</label>
+          <div class="tags" id="u-mod-tags" style="margin-bottom:6px"></div>
+          <input id="u-needs" placeholder="o escribe directo…" oninput="buildUrlPanel()"/>
+        </div>
+      </div>
+
+      <div class="url-box" id="u-url" onclick="copyUrlPanel()">—</div>
+
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn btn-p btn-sm" onclick="openUrlPanel()">↗ Abrir</button>
+        <button class="btn btn-g btn-sm" onclick="copyUrlPanel()">⎘ Copiar</button>
+        <button class="btn btn-g btn-sm" onclick="copyTag()">&#60;script&#62; tag</button>
+      </div>
+
+      <div class="divider"></div>
+      <div class="sec-label">Preview resolución de módulos</div>
+      <div id="u-preview" class="out" style="min-height:44px">—</div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+</div><!-- /layout -->
 
 <div id="toast"></div>
 
 <script>
-// ── State ────────────────────────────────────────────────────────────────────
+// ── State ──────────────────────────────────────────────────────────────────
 let manifest = {};
-let activeKey = null;
-let isNew = false;
+let pages    = {};
+let sideMode = 'mods';   // 'mods' | 'pages'
+let activeKey  = null;
+let activeType = null;   // 'mod' | 'page'
+let isNew    = false;
+let testerMode = 'needs';
 
-function server() { return document.getElementById('server-url').value.replace(/\/$/, ''); }
-function apiKey() { return document.getElementById('api-key').value; }
+// ── Helpers ────────────────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const srv = () => $('srv').value.replace(/\/$/,'');
+const ak  = () => $('apikey').value;
+const hdrs = () => ({'Content-Type':'application/json','x-api-key':ak()});
 
-function headers() {
-  return {
-    'Content-Type': 'application/json',
-    'x-api-key': apiKey(),
-  };
+let toastT;
+function toast(msg, type='ok'){
+  const el = $('toast');
+  el.textContent = msg; el.className = type; el.style.display = 'block';
+  clearTimeout(toastT); toastT = setTimeout(()=>el.style.display='none', 3000);
 }
 
-// ── Toast ────────────────────────────────────────────────────────────────────
-let toastTimer;
-function toast(msg, type = 'ok') {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.className = type;
-  el.style.display = 'block';
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.style.display = 'none', 3200);
+function setDot(state, label){
+  $('dot').className = 'dot ' + state;
+  $('status-lbl').textContent = label;
 }
+function setConnectState(state) {
+  const btn = document.getElementById('connect-btn');
+  if (!btn) return;
 
-// ── Status dot ───────────────────────────────────────────────────────────────
-function setStatus(state, label) {
-  const dot = document.getElementById('status-dot');
-  const lbl = document.getElementById('status-label');
-  dot.className = state;
-  lbl.textContent = label;
+  btn.disabled = false;
+
+  switch (state) {
+    case 'loading':
+      btn.textContent = 'Conectando...';
+      btn.className = 'btn btn-sm';
+      btn.style.background = '#f59e0b';
+      break;
+
+    case 'connected':
+      btn.textContent = '● LIVE';
+      btn.className = 'btn btn-sm';
+      btn.style.background = '#16a34a';
+      btn.style.color = '#fff';
+      break;
+
+    case 'error':
+      btn.textContent = '⚠ ERROR';
+      btn.className = 'btn btn-sm';
+      btn.style.background = '#dc2626';
+      btn.style.color = '#fff';
+      break;
+
+    default:
+      btn.textContent = 'Conectar';
+      btn.className = 'btn btn-p btn-sm';
+      btn.style.background = '';
+      btn.style.color = '';
+  }
 }
+// ── Connect ────────────────────────────────────────────────────────────────
+async function connect() {
 
-// ── Load modules ─────────────────────────────────────────────────────────────
-async function loadModules() {
-  const spin = document.getElementById('list-spin');
-  spin.style.display = 'block';
-  setStatus('', 'conectando…');
+  setConnectState('loading');
+  setDot('ld', 'conectando…');
 
   try {
-    const res = await fetch(`${server()}/bundle/list`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(`${srv()}/bundle/list`);
+
+    if (!res.ok) {
+      throw new Error('HTTP ' + res.status);
+    }
+
     const data = await res.json();
 
-    // Rebuild manifest from list + fetch raw for editing
-    await loadRawManifest();
+    manifest = {};
+    (data.modules || []).forEach(m => {
+      manifest[m.name] = m;
+    });
 
-    renderList(data.modules || []);
-    document.getElementById('mod-count').textContent = `(${Object.keys(manifest).length})`;
-    setStatus('ok', `${server()}`);
+    pages = {};
+    (data.pages || []).forEach(p => {
+      pages[p.name] = p;
+    });
+
+    setDot('ok', srv().replace('https://', ''));
+    setConnectState('connected');
+
+    renderSide();
+    refreshTesterTags();
+    refreshUrlTags();
+    refreshPageSelects();
+
+    toast(
+      `✓ ${Object.keys(manifest).length} módulos, ${Object.keys(pages).length} páginas`
+    );
+
   } catch (e) {
-    setStatus('err', e.message);
-    toast('No se pudo conectar: ' + e.message, 'err');
-  } finally {
-    spin.style.display = 'none';
+
+    setDot('er', e.message);
+    setConnectState('error');
+
+    toast('Error: ' + e.message, 'er');
   }
 }
 
-async function loadRawManifest() {
-  const res = await fetch(`${server()}/get/bundle_manifest`);
-  if (!res.ok) return;
-  const data = await res.json();
-  manifest = data.value || {};
+// ── Sidebar tabs ───────────────────────────────────────────────────────────
+function sideTab(mode){
+  sideMode = mode;
+  $('stab-mods').classList.toggle('active', mode==='mods');
+  $('stab-pages').classList.toggle('active', mode==='pages');
+  $('side-search').value = '';
+  renderSide();
 }
 
-// ── Render list ──────────────────────────────────────────────────────────────
-function renderList(modules) {
-  const list = document.getElementById('module-list');
-  if (!modules.length) {
-    list.innerHTML = `<div class="empty" style="height:160px"><span class="empty-glyph">{ }</span><p>Sin módulos aún</p></div>`;
-    return;
+function filterSide(){
+  renderSide($('side-search').value.toLowerCase());
+}
+
+function renderSide(q=''){
+  const list = $('side-list');
+  if(sideMode === 'mods'){
+    const keys = Object.keys(manifest).filter(k => !q || k.includes(q));
+    if(!keys.length){
+      list.innerHTML = `<div class="empty" style="height:120px"><span class="empty-g">{ }</span><p>${q?'Sin resultados':'Sin módulos'}</p></div>`;
+      return;
+    }
+    list.innerHTML = keys.map(k => {
+      const m = manifest[k];
+      const deps = m.deps||[];
+      return `<div class="item ${activeKey===k&&activeType==='mod'?'active':''}" onclick="selectMod('${k}')">
+        <span class="item-icon">js</span>
+        <span class="item-name">${k}</span>
+        ${deps.length ? `<span class="item-badge">${deps.length}d</span>` : ''}
+      </div>`;
+    }).join('');
+  } else {
+    const keys = Object.keys(pages).filter(k => !q || k.includes(q));
+    if(!keys.length){
+      list.innerHTML = `<div class="empty" style="height:120px"><span class="empty-g">⬡</span><p>${q?'Sin resultados':'Sin páginas'}</p></div>`;
+      return;
+    }
+    list.innerHTML = keys.map(k => {
+      const p = pages[k];
+      const h = (p.head||[]).length;
+      const b = (p.body_end||[]).length;
+      return `<div class="item ${activeKey===k&&activeType==='page'?'active':''}" onclick="selectPage('${k}')">
+        <span class="item-icon">pg</span>
+        <span class="item-name">${k}</span>
+        <span class="item-badge head">${h}h</span>
+        <span class="item-badge body">${b}b</span>
+      </div>`;
+    }).join('');
   }
-
-  list.innerHTML = modules.map(m => `
-    <div class="mod-item ${m.name === activeKey ? 'active' : ''}"
-         onclick="selectModule('${m.name}')">
-      <span class="mod-icon">js</span>
-      <span class="mod-name">${m.name}</span>
-      ${m.deps && m.deps.length ? `<span class="mod-deps-badge">${m.deps.length}d</span>` : ''}
-    </div>
-  `).join('');
 }
 
-// ── Select module ────────────────────────────────────────────────────────────
-function selectModule(name) {
-  activeKey = name;
-  isNew = false;
-  highlightActive();
-  renderEditor(name, manifest[name] || {});
-}
-
-function highlightActive() {
-  document.querySelectorAll('.mod-item').forEach(el => {
-    el.classList.toggle('active', el.textContent.trim().startsWith('js') &&
-      el.querySelector('.mod-name')?.textContent === activeKey);
-  });
-}
-
-// ── New module ───────────────────────────────────────────────────────────────
-function newModule() {
-  activeKey = null;
+// ── New item ───────────────────────────────────────────────────────────────
+function newItem(){
+  mainTab('editor');
   isNew = true;
-  document.querySelectorAll('.mod-item').forEach(el => el.classList.remove('active'));
-  renderEditor(null, {});
+  activeKey = null;
+  if(sideMode === 'mods') renderModEditor(null, {});
+  else renderPageEditor(null, {});
 }
 
-// ── Render editor ────────────────────────────────────────────────────────────
-function renderEditor(name, mod) {
-  const title = document.getElementById('panel-title');
-  const actions = document.getElementById('panel-actions');
-  const body = document.getElementById('panel-body');
+// ── Select mod ─────────────────────────────────────────────────────────────
+function selectMod(name){
+  mainTab('editor');
+  activeKey = name; activeType = 'mod'; isNew = false;
+  renderSide($('side-search').value.toLowerCase());
+  const m = manifest[name] || {};
+  renderModEditor(name, m);
+}
 
-  title.textContent = isNew ? '+ nuevo módulo' : name;
-  title.style.color = isNew ? 'var(--accent)' : 'var(--text)';
+function renderModEditor(name, mod){
+  $('editor-empty').style.display = 'none';
+  const c = $('editor-content');
+  c.style.display = 'block';
 
-  const filename = mod.githubPath ? mod.githubPath.split('/').pop() : '';
-  const deps = mod.deps || [];
+  const file   = mod.file || (mod.githubPath ? mod.githubPath.split('/').pop() : '');
   const branch = mod.branch || '';
+  const deps   = mod.deps || [];
+  const otherMods = Object.keys(manifest).filter(k => k !== name);
 
-  // Info row (solo edit)
-  const infoRow = !isNew && mod.githubPath ? `
-    <div class="info-row">
-      <span>ruta resuelta:</span>
-      <span class="info-chip">public/js_modules/${filename}</span>
-      <span style="color:var(--border2)">|</span>
-      <span>branch:</span>
-      <span class="info-chip">${branch || 'main'}</span>
+  c.innerHTML = `
+    <div class="row" style="margin-bottom:14px;align-items:flex-start">
+      <div style="flex:1">
+        <div style="font-size:13px;color:${isNew?'var(--a)':'var(--t)'}">
+          ${isNew ? '+ nuevo módulo' : name}
+        </div>
+        ${!isNew && mod.resolvedPath ? `<div class="info-pill" style="margin-top:4px">public/js_modules/${file}</div>` : ''}
+      </div>
+      ${!isNew ? `
+        <button class="btn btn-ok btn-sm" onclick="testMod('${name}')">▷ Probar</button>
+        <button class="btn btn-er btn-sm" onclick="deleteMod('${name}')">✕</button>
+      ` : ''}
     </div>
-  ` : '';
 
-  body.innerHTML = `
-    ${infoRow}
-    <div class="form-grid">
-
-      <div class="form-group">
+    <div class="grid2">
+      <div class="fg">
         <label>Nombre del módulo</label>
-        <input id="f-name" type="text" value="${name || ''}"
-               placeholder="ej: arqueomain"
-               ${!isNew ? 'readonly style="opacity:.5"' : ''}/>
-        <span class="hint">Solo letras, números, guiones</span>
+        <input id="e-name" value="${name||''}" placeholder="ej: arqueomain"
+               ${!isNew?'readonly style="opacity:.5"':''}/>
       </div>
-
-      <div class="form-group">
-        <label>Archivo (.js)</label>
-        <input id="f-file" type="text" value="${filename}"
-               placeholder="arqueomain.js"/>
-        <span class="hint">Nombre del archivo en js_modules/</span>
+      <div class="fg">
+        <label>Archivo .js</label>
+        <input id="e-file" value="${file}" placeholder="arqueomain.js"/>
+        <span class="hint">En public/js_modules/</span>
       </div>
-
-      <div class="form-group">
-        <label>Branch (opcional)</label>
-        <input id="f-branch" type="text" value="${branch}"
-               placeholder="main"/>
+      <div class="fg">
+        <label>Branch (vacío = main)</label>
+        <input id="e-branch" value="${branch}" placeholder="main"/>
       </div>
-
-      <div class="form-group">
-        <label>&nbsp;</label>
-        <button class="btn btn-ghost btn-sm" onclick="previewFile()">
-          ↗ Ver en GitHub
-        </button>
+      <div class="fg" style="justify-content:flex-end">
+        <button class="btn btn-g btn-sm" onclick="previewMod()">↗ Ver raw en bundle</button>
       </div>
-
-      <div class="form-group full">
+      <div class="fg full">
         <label>Dependencias</label>
-        <div class="deps-tags" id="deps-container">
+        <div class="tags" id="e-deps" style="padding:6px;background:var(--s3);border:1px solid var(--b);border-radius:5px;min-height:34px">
           ${deps.map(d => depTag(d)).join('')}
         </div>
-        <div class="dep-add">
-          <select id="dep-select" style="width:200px">
+        <div class="row" style="margin-top:5px">
+          <select id="e-dep-sel" style="flex:1">
             <option value="">— agregar dep —</option>
-            ${Object.keys(manifest)
-              .filter(k => k !== name)
-              .map(k => `<option value="${k}">${k}</option>`).join('')}
+            ${otherMods.map(k=>`<option value="${k}">${k}</option>`).join('')}
           </select>
-          <button class="btn btn-ghost btn-sm" onclick="addDep()">+ Agregar</button>
+          <button class="btn btn-g btn-sm" onclick="addDep()">+</button>
         </div>
       </div>
-
     </div>
 
-    <hr class="divider"/>
-
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn btn-primary" onclick="saveModule()">
-        ${isNew ? '+ Crear módulo' : '↑ Guardar cambios'}
-      </button>
-      ${!isNew ? `
-        <button class="btn btn-ok" onclick="testThisModule()">▷ Probar</button>
-        <button class="btn btn-danger" onclick="deleteModule('${name}')">✕ Eliminar</button>
-      ` : ''}
-      <button class="btn btn-ghost" onclick="cancelEdit()">Cancelar</button>
+    <div class="divider"></div>
+    <div class="row">
+      <button class="btn btn-p" onclick="saveMod()">${isNew?'+ Crear':'↑ Guardar'}</button>
+      <button class="btn btn-g" onclick="cancelEdit()">Cancelar</button>
     </div>
   `;
-
-  // Actions en header
-  actions.innerHTML = !isNew ? `
-    <a href="${server()}/bundle?needs=${name}" target="_blank"
-       style="font-family:var(--mono);font-size:11px;color:var(--muted);text-decoration:none">
-      /bundle?needs=${name} ↗
-    </a>
-  ` : '';
 }
 
-function depTag(name) {
-  return `<span class="dep-tag" data-dep="${name}">
-    ${name}
-    <button onclick="removeDep('${name}')">×</button>
-  </span>`;
+function depTag(d){
+  return `<span class="tag tag-mod" data-dep="${d}">${d} <button class="tag-rem" onclick="removeDep('${d}')">×</button></span>`;
 }
-
-function addDep() {
-  const sel = document.getElementById('dep-select');
-  const val = sel.value;
-  if (!val) return;
-  const container = document.getElementById('deps-container');
-  if (container.querySelector(`[data-dep="${val}"]`)) return;
-  container.insertAdjacentHTML('beforeend', depTag(val));
+function addDep(){
+  const sel = $('e-dep-sel'); const v = sel.value; if(!v) return;
+  const c = $('e-deps');
+  if(c.querySelector(`[data-dep="${v}"]`)) return;
+  c.insertAdjacentHTML('beforeend', depTag(v));
   sel.value = '';
 }
+function removeDep(d){ document.querySelector(`.tag[data-dep="${d}"]`)?.remove(); }
+function getDeps(){ return [...document.querySelectorAll('#e-deps [data-dep]')].map(el=>el.dataset.dep); }
 
-function removeDep(name) {
-  document.querySelector(`.dep-tag[data-dep="${name}"]`)?.remove();
-}
-
-function getDeps() {
-  return [...document.querySelectorAll('.dep-tag')].map(el => el.dataset.dep);
-}
-
-// ── Save ─────────────────────────────────────────────────────────────────────
-async function saveModule() {
-  const name    = document.getElementById('f-name')?.value?.trim();
-  const file    = document.getElementById('f-file')?.value?.trim();
-  const branch  = document.getElementById('f-branch')?.value?.trim();
-  const deps    = getDeps();
-
-  if (!name) return toast('El nombre es requerido', 'err');
-  if (!file) return toast('El archivo es requerido', 'err');
+async function saveMod(){
+  const name   = $('e-name')?.value?.trim();
+  const file   = $('e-file')?.value?.trim();
+  const branch = $('e-branch')?.value?.trim();
+  const deps   = getDeps();
+  if(!name) return toast('Nombre requerido','er');
+  if(!file) return toast('Archivo requerido','er');
 
   const entry = {
     githubPath: `public/js_modules/${file}`,
-    ...(branch ? { branch } : {}),
-    ...(deps.length ? { deps } : {}),
+    ...(branch ? {branch} : {}),
+    ...(deps.length ? {deps} : {}),
   };
 
-  const updates = { [name]: entry };
-
   try {
-    const res = await fetch(`${server()}/api/bundle/manifest`, {
-      method: 'PATCH',
-      headers: headers(),
-      body: JSON.stringify(updates),
+    const res = await fetch(`${srv()}/api/bundle/manifest`,{
+      method:'PATCH', headers:hdrs(), body:JSON.stringify({[name]:entry})
     });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error);
-
-    manifest[name] = entry;
-    activeKey = name;
-    isNew = false;
-
+    const d = await res.json();
+    if(!d.ok) throw new Error(d.error);
+    manifest[name] = { name, file, resolvedPath:`public/js_modules/${file}`, branch, deps };
+    activeKey = name; activeType = 'mod'; isNew = false;
     toast(`✓ ${name} guardado`);
-    await loadModules();
-    selectModule(name);
-  } catch (e) {
-    toast('Error: ' + e.message, 'err');
-  }
+    renderSide(); selectMod(name);
+    refreshTesterTags(); refreshUrlTags();
+  } catch(e){ toast(e.message,'er'); }
 }
 
-// ── Delete ────────────────────────────────────────────────────────────────────
-async function deleteModule(name) {
-  if (!confirm(`¿Eliminar "${name}" del manifest?`)) return;
-
+async function deleteMod(name){
+  if(!confirm(`¿Eliminar módulo "${name}"?`)) return;
   try {
-    const res = await fetch(`${server()}/api/bundle/manifest/${name}`, {
-      method: 'DELETE',
-      headers: headers(),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error);
-
+    const res = await fetch(`${srv()}/api/bundle/manifest/${name}`,{method:'DELETE',headers:hdrs()});
+    const d = await res.json();
+    if(!d.ok) throw new Error(d.error);
     delete manifest[name];
-    activeKey = null;
-    toast(`✓ ${name} eliminado`, 'warn');
-    await loadModules();
-    clearPanel();
-  } catch (e) {
-    toast('Error: ' + e.message, 'err');
-  }
+    toast(`✓ ${name} eliminado`,'warn');
+    activeKey = null; activeType = null;
+    renderSide(); clearEditor();
+    refreshTesterTags(); refreshUrlTags();
+  } catch(e){ toast(e.message,'er'); }
 }
 
-function clearPanel() {
-  document.getElementById('panel-title').textContent = '— selecciona un módulo —';
-  document.getElementById('panel-title').style.color = 'var(--muted)';
-  document.getElementById('panel-actions').innerHTML = '';
-  document.getElementById('panel-body').innerHTML = `
-    <div class="empty">
-      <span class="empty-glyph">⬡</span>
-      <p>Selecciona un módulo o crea uno nuevo</p>
-    </div>`;
+function previewMod(){
+  const name = $('e-name')?.value?.trim();
+  if(!name) return toast('Guarda primero','warn');
+  window.open(`${srv()}/bundle?needs=${name}&nocache=1`,'_blank');
 }
 
-function cancelEdit() {
-  if (activeKey && !isNew) {
-    selectModule(activeKey);
-  } else {
-    isNew = false;
-    activeKey = null;
-    clearPanel();
-  }
+function testMod(name){
+  mainTab('tester');
+  setTesterMode('needs');
+  $('t-needs').value = name;
+  buildTestUrl();
 }
 
-// ── Preview in GitHub ─────────────────────────────────────────────────────────
-function previewFile() {
-  const file   = document.getElementById('f-file')?.value?.trim();
-  const branch = document.getElementById('f-branch')?.value?.trim() || 'main';
-  if (!file) return toast('Ingresa el nombre del archivo primero', 'warn');
-  // No tenemos REPO info en el cliente, abrimos el bundle directo
-  const name = document.getElementById('f-name')?.value?.trim();
-  if (name && manifest[name]) {
-    window.open(`${server()}/bundle?needs=${name}&nocache=1`, '_blank');
-  } else {
-    toast('Guarda el módulo primero para probarlo', 'warn');
-  }
+// ── Select page ────────────────────────────────────────────────────────────
+function selectPage(name){
+  mainTab('editor');
+  activeKey = name; activeType = 'page'; isNew = false;
+  renderSide($('side-search').value.toLowerCase());
+  renderPageEditor(name, pages[name]||{});
 }
 
-// ── Test this module ──────────────────────────────────────────────────────────
-function testThisModule() {
-  openTestPanel(activeKey);
-}
+function renderPageEditor(name, cfg){
+  $('editor-empty').style.display = 'none';
+  const c = $('editor-content');
+  c.style.display = 'block';
 
-// ── Test panel ────────────────────────────────────────────────────────────────
-function openTestPanel(preload) {
-  const body   = document.getElementById('panel-body');
-  const title  = document.getElementById('panel-title');
-  const actions = document.getElementById('panel-actions');
-  activeKey = null;
-  isNew = false;
-  document.querySelectorAll('.mod-item').forEach(el => el.classList.remove('active'));
+  const head    = cfg.head     || [];
+  const bodyEnd = cfg.body_end || [];
+  const desc    = cfg.description || '';
 
-  title.textContent = 'Probar bundle';
-  title.style.color = 'var(--text)';
-  actions.innerHTML = '';
-
-  const mods = Object.keys(manifest).join(', ');
-
-  body.innerHTML = `
-    <p class="section-label">Genera y prueba un bundle con los módulos que elijas</p>
-    <div class="test-row">
-      <input id="test-needs" type="text"
-             value="${preload || ''}"
-             placeholder="arqueomain, screenSmart, …"
-             style="flex:1"/>
-      <button class="btn btn-primary" onclick="runTest()">▷ Generar</button>
-      <button class="btn btn-ghost" onclick="runTestNewTab()">↗ Nueva pestaña</button>
+  c.innerHTML = `
+    <div class="row" style="margin-bottom:14px">
+      <div style="flex:1;font-size:13px;color:${isNew?'var(--a)':'var(--t)'}">
+        ${isNew ? '+ nueva página' : name}
+      </div>
+      ${!isNew ? `
+        <button class="btn btn-ok btn-sm" onclick="testPage('${name}')">▷ Probar</button>
+        <button class="btn btn-er btn-sm" onclick="deletePage('${name}')">✕</button>
+      ` : ''}
     </div>
-    <p style="font-size:10px;color:var(--muted);margin-top:6px;font-family:var(--mono)">
-      Disponibles: ${mods}
-    </p>
-    <div class="test-output" id="test-out">Resultado aparecerá aquí…</div>
 
-    <hr class="divider"/>
-    <p class="section-label">URL generada</p>
-    <div class="test-output" id="test-url" style="min-height:unset"></div>
+    <div class="grid2">
+      <div class="fg">
+        <label>Nombre de página</label>
+        <input id="p-name" value="${name||''}" placeholder="ej: dabeiba"
+               ${!isNew?'readonly style="opacity:.5"':''}/>
+      </div>
+      <div class="fg">
+        <label>Descripción</label>
+        <input id="p-desc" value="${desc}" placeholder="Publicación arqueológica…"/>
+      </div>
+
+      <div class="fg full">
+        <label style="color:var(--head-c)">▸ head — se cargan primero</label>
+        <div class="slot slot-head" id="p-head-slot">
+          ${head.map((m,i)=>sortItem(m,i,'head')).join('')}
+          ${!head.length?'<span style="font-size:10px;color:var(--t3)">Sin módulos</span>':''}
+        </div>
+        <div class="row" style="margin-top:5px">
+          <select id="p-head-sel" style="flex:1">
+            <option value="">— agregar a head —</option>
+            ${Object.keys(manifest).map(k=>`<option value="${k}">${k}</option>`).join('')}
+          </select>
+          <button class="btn btn-head btn-sm" onclick="addToSlot('head')">+</button>
+        </div>
+      </div>
+
+      <div class="fg full">
+        <label style="color:var(--body-c)">▸ body_end — al final del body</label>
+        <div class="slot slot-body" id="p-body-slot">
+          ${bodyEnd.map((m,i)=>sortItem(m,i,'body')).join('')}
+          ${!bodyEnd.length?'<span style="font-size:10px;color:var(--t3)">Sin módulos</span>':''}
+        </div>
+        <div class="row" style="margin-top:5px">
+          <select id="p-body-sel" style="flex:1">
+            <option value="">— agregar a body_end —</option>
+            ${Object.keys(manifest).map(k=>`<option value="${k}">${k}</option>`).join('')}
+          </select>
+          <button class="btn btn-body btn-sm" onclick="addToSlot('body')">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <div class="row">
+      <button class="btn btn-p" onclick="savePage()">${isNew?'+ Crear página':'↑ Guardar'}</button>
+      <button class="btn btn-g" onclick="cancelEdit()">Cancelar</button>
+    </div>
   `;
+  initDragDrop('p-head-slot');
+  initDragDrop('p-body-slot');
 }
 
-async function runTest() {
-  const needs = document.getElementById('test-needs').value.trim();
-  if (!needs) return toast('Ingresa al menos un módulo', 'warn');
+function sortItem(mod, idx, slot){
+  return `<div class="sort-item" draggable="true" data-mod="${mod}" data-slot="${slot}">
+    <span class="sort-handle">⠿</span>
+    <span class="sort-idx">${idx+1}</span>
+    <span style="flex:1;font-size:11px">${mod}</span>
+    <button class="btn btn-xs btn-g" onclick="removeFromSlot('${slot}','${mod}')">✕</button>
+  </div>`;
+}
 
-  const url = `${server()}/bundle?needs=${needs}`;
-  document.getElementById('test-url').textContent = url;
+function addToSlot(slot){
+  const sel = $(slot==='head'?'p-head-sel':'p-body-sel');
+  const val = sel.value; if(!val) return;
+  const container = $(slot==='head'?'p-head-slot':'p-body-slot');
+  if(container.querySelector(`[data-mod="${val}"]`)) return toast('Ya está en ese slot','warn');
+  const items = container.querySelectorAll('.sort-item');
+  // remove empty msg
+  container.querySelectorAll('span').forEach(s=>{ if(s.textContent.includes('Sin')) s.remove(); });
+  container.insertAdjacentHTML('beforeend', sortItem(val, items.length, slot));
+  sel.value = '';
+  reindexSlot(slot);
+}
 
-  const out = document.getElementById('test-out');
-  out.textContent = 'Cargando…';
+function removeFromSlot(slot, mod){
+  const container = $(slot==='head'?'p-head-slot':'p-body-slot');
+  container.querySelector(`[data-mod="${mod}"]`)?.remove();
+  reindexSlot(slot);
+}
+
+function reindexSlot(slot){
+  const container = $(slot==='head'?'p-head-slot':'p-body-slot');
+  container.querySelectorAll('.sort-item').forEach((el,i)=>{
+    el.querySelector('.sort-idx').textContent = i+1;
+  });
+}
+
+function getSlotMods(slot){
+  const container = $(slot==='head'?'p-head-slot':'p-body-slot');
+  return [...container.querySelectorAll('.sort-item')].map(el=>el.dataset.mod);
+}
+
+// ── Drag & drop reorder ────────────────────────────────────────────────────
+function initDragDrop(containerId){
+  const c = $(containerId); if(!c) return;
+  let dragging = null;
+  c.addEventListener('dragstart', e=>{
+    dragging = e.target.closest('.sort-item');
+    if(dragging) dragging.style.opacity='.4';
+  });
+  c.addEventListener('dragend', ()=>{
+    if(dragging){ dragging.style.opacity=''; dragging=null; }
+  });
+  c.addEventListener('dragover', e=>{
+    e.preventDefault();
+    const over = e.target.closest('.sort-item');
+    if(over && over !== dragging){
+      const rect = over.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height/2;
+      c.insertBefore(dragging, after ? over.nextSibling : over);
+    }
+  });
+  c.addEventListener('drop', ()=>{
+    const slot = containerId.includes('head')?'head':'body';
+    reindexSlot(slot);
+  });
+}
+
+async function savePage(){
+  const name    = $('p-name')?.value?.trim();
+  const desc    = $('p-desc')?.value?.trim();
+  const head    = getSlotMods('head');
+  const bodyEnd = getSlotMods('body');
+  if(!name) return toast('Nombre requerido','er');
+
+  const entry = { description:desc, head, body_end:bodyEnd };
+  try {
+    const res = await fetch(`${srv()}/api/bundle/pages`,{
+      method:'PATCH', headers:hdrs(), body:JSON.stringify({[name]:entry})
+    });
+    const d = await res.json();
+    if(!d.ok) throw new Error(d.error);
+    pages[name] = { name, ...entry };
+    activeKey = name; activeType = 'page'; isNew = false;
+    toast(`✓ ${name} guardado`);
+    renderSide(); selectPage(name);
+    refreshPageSelects();
+  } catch(e){ toast(e.message,'er'); }
+}
+
+async function deletePage(name){
+  if(!confirm(`¿Eliminar página "${name}"?`)) return;
+  try {
+    const res = await fetch(`${srv()}/api/bundle/pages/${name}`,{method:'DELETE',headers:hdrs()});
+    const d = await res.json();
+    if(!d.ok) throw new Error(d.error);
+    delete pages[name];
+    toast(`✓ ${name} eliminado`,'warn');
+    activeKey=null; activeType=null;
+    renderSide(); clearEditor(); refreshPageSelects();
+  } catch(e){ toast(e.message,'er'); }
+}
+
+function testPage(name){
+  mainTab('tester');
+  setTesterMode('page');
+  $('t-page').value = name;
+  buildTestUrl();
+}
+
+// ── Editor utils ───────────────────────────────────────────────────────────
+function clearEditor(){
+  $('editor-empty').style.display = 'flex';
+  $('editor-content').style.display = 'none';
+}
+
+function cancelEdit(){
+  isNew = false;
+  if(activeKey && activeType==='mod') selectMod(activeKey);
+  else if(activeKey && activeType==='page') selectPage(activeKey);
+  else clearEditor();
+}
+
+// ── Main tabs ──────────────────────────────────────────────────────────────
+function mainTab(t){
+  ['editor','tester','url'].forEach(id=>{
+    $(`mtab-${id}`).classList.toggle('active', id===t);
+    $(`panel-${id}`).classList.toggle('active', id===t);
+  });
+}
+
+// ── Tester mode ────────────────────────────────────────────────────────────
+function setTesterMode(mode){
+  testerMode = mode;
+  ['needs','page','combo'].forEach(m=>{
+    $(`tmode-${m}`).className = 'btn btn-sm ' + (m===mode?'btn-p':'btn-g');
+  });
+  $('tester-needs-row').style.display = (mode==='needs'||mode==='combo') ? 'flex':'none';
+  $('tester-needs-row').style.flexDirection = 'column';
+  $('tester-page-row').style.display  = (mode==='page'||mode==='combo')  ? 'flex':'none';
+  $('tester-page-row').style.flexDirection = 'column';
+  $('tester-extra-row').style.display = mode==='combo' ? 'flex':'none';
+  $('tester-extra-row').style.flexDirection = 'column';
+  buildTestUrl();
+}
+
+function refreshTesterTags(){
+  const c = $('t-mod-tags');
+  if(!c) return;
+  c.innerHTML = Object.keys(manifest).map(k=>
+    `<span class="tag tag-mod" onclick="addNeedsTag('${k}')">${k}</span>`
+  ).join('');
+}
+
+function addNeedsTag(name){
+  const el = $('t-needs');
+  const cur = el.value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!cur.includes(name)) cur.push(name);
+  el.value = cur.join(',');
+  buildTestUrl();
+}
+
+function clearNeeds(){
+  $('t-needs').value=''; buildTestUrl();
+}
+
+function refreshPageSelects(){
+  const opts = '<option value="">— seleccionar —</option>' +
+    Object.keys(pages).map(k=>`<option value="${k}">${k}</option>`).join('');
+  ['t-page','u-page'].forEach(id=>{ const el=$(id); if(el) el.innerHTML=opts; });
+}
+
+function buildTestUrl(){
+  const mode  = testerMode;
+  const srv_  = srv();
+  const nc    = $('t-nocache').checked ? '&nocache=1':'';
+  let url = srv_+'/bundle?';
+  const parts = [];
+
+  if(mode==='needs'){
+    const n = $('t-needs').value.trim();
+    if(n) parts.push('needs='+n);
+  } else if(mode==='page'){
+    const p = $('t-page').value;
+    if(p) parts.push('page='+p);
+    if($('t-header').checked) parts.push('header=true');
+  } else {
+    const p = $('t-page').value;
+    const n = $('t-needs').value.trim();
+    const x = $('t-extra').value.trim();
+    if(p) parts.push('page='+p);
+    if(n) parts.push('needs='+n);
+    if(x) parts.push('needs='+x);
+    if($('t-header').checked) parts.push('header=true');
+  }
+
+  if(!parts.length){ $('t-url').textContent='—'; return; }
+  url += parts.join('&') + nc;
+  $('t-url').innerHTML = colorizeUrl(url);
+}
+
+function colorizeUrl(url){
+  return url
+    .replace(/(page=[^&]+)/g,'<span class="param-page">$1</span>')
+    .replace(/(header=true)/g,'<span class="param-head">$1</span>')
+    .replace(/(needs=[^&]+)/g,'<span class="param-needs">$1</span>')
+    .replace(/(nocache=1)/g,'<span style="color:var(--warn)">$1</span>');
+}
+
+async function runTest(){
+  const urlEl = $('t-url');
+  const rawUrl = urlEl.textContent || urlEl.innerText;
+  if(!rawUrl || rawUrl==='—') return toast('Construye una URL primero','warn');
+
+  const out   = $('t-out');
+  const chips = $('t-chips');
+  const sp    = $('t-spin');
+  const btn   = $('btn-run');
+
+  out.className='out'; out.textContent='Cargando…';
+  chips.style.display='none'; sp.style.display='block'; btn.disabled=true;
 
   try {
     const t0  = Date.now();
-    const res = await fetch(url);
-    const ms  = Date.now() - t0;
+    const res = await fetch(rawUrl);
+    const ms  = Date.now()-t0;
 
-    if (!res.ok) {
-      const err = await res.json();
-      out.textContent = `✗ Error ${res.status}: ${err.error}`;
+    const cache  = res.headers.get('X-Bundle-Cache')||'?';
+    const headM  = res.headers.get('X-Bundle-Head')||'';
+    const bodyM  = res.headers.get('X-Bundle-Body-End')||'';
+
+    if(!res.ok){
+      let msg = 'HTTP '+res.status;
+      try{ const j=await res.json(); msg=j.error||msg; }catch(e){}
+      out.className='out er'; out.textContent='✗ '+msg;
       return;
     }
 
-    const text  = await res.text();
-    const cache = res.headers.get('X-Bundle-Cache') || '?';
-    const mods  = res.headers.get('X-Bundle-Modules') || needs;
-    const kb    = (text.length / 1024).toFixed(1);
+    const text = await res.text();
+    const kb   = (text.length/1024).toFixed(2);
+    const lines = text.split('\n').length;
 
-    out.textContent = [
-      `✓ ${ms}ms | ${kb} KB | cache: ${cache}`,
-      `módulos: ${mods}`,
-      ``,
-      text.slice(0, 600) + (text.length > 600 ? '\n…' : ''),
-    ].join('\n');
+    chips.style.display='flex';
+    chips.innerHTML = `
+      <span class="chip ok">${ms} ms</span>
+      <span class="chip ok">${kb} KB</span>
+      <span class="chip ok">${lines} líneas</span>
+      <span class="chip ${cache==='HIT'?'hit':'mis'}">cache: ${cache}</span>
+      ${headM ? `<span class="chip" style="color:var(--head-c);border-color:#2a4a6a">head: ${headM}</span>`:''}
+      ${bodyM ? `<span class="chip" style="color:var(--body-c);border-color:#3a2a6a">body: ${bodyM}</span>`:''}
+    `;
 
-  } catch (e) {
-    out.textContent = '✗ ' + e.message;
+    out.className='out ok';
+    out.textContent = text.slice(0,1400)+(text.length>1400?'\n\n…('+text.length+' chars total)':'');
+
+  } catch(e){
+    out.className='out er'; out.textContent='✗ '+e.message;
+  } finally {
+    sp.style.display='none'; btn.disabled=false;
   }
 }
 
-function runTestNewTab() {
-  const needs = document.getElementById('test-needs')?.value?.trim();
-  if (!needs) return toast('Ingresa módulos primero', 'warn');
-  window.open(`${server()}/bundle?needs=${needs}`, '_blank');
+function openTab(){
+  const url = ($('t-url').textContent||$('t-url').innerText).trim();
+  if(!url||url==='—') return toast('Construye una URL primero','warn');
+  window.open(url,'_blank');
 }
 
-// ── Invalidate cache ──────────────────────────────────────────────────────────
-async function invalidateCache() {
+function injectScript(){
+  const url = ($('t-url').textContent||$('t-url').innerText).trim();
+  if(!url||url==='—') return toast('Construye una URL primero','warn');
+  const s = document.createElement('script');
+  s.src = url;
+  s.onload = ()=>{ $('t-out').className='out ok'; $('t-out').textContent='✓ Inyectado en página — revisa consola'; };
+  s.onerror = ()=>{ $('t-out').className='out er'; $('t-out').textContent='✗ Error al inyectar — revisa consola y CORS'; };
+  document.head.appendChild(s);
+}
+
+function copyUrl(){
+  const url = ($('t-url').textContent||$('t-url').innerText).trim();
+  if(!url||url==='—') return;
+  navigator.clipboard?.writeText(url);
+  toast('✓ URL copiada');
+}
+
+// ── URL Builder panel ──────────────────────────────────────────────────────
+function refreshUrlTags(){
+  const c = $('u-mod-tags');
+  if(!c) return;
+  c.innerHTML = Object.keys(manifest).map(k=>
+    `<span class="tag tag-mod" onclick="addUrlNeedsTag('${k}')">${k}</span>`
+  ).join('');
+}
+
+function addUrlNeedsTag(name){
+  const el = $('u-needs');
+  const cur = el.value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!cur.includes(name)) cur.push(name);
+  el.value = cur.join(',');
+  buildUrlPanel();
+}
+
+function buildUrlPanel(){
+  const page = $('u-page').value;
+  const hdr  = $('u-header').checked;
+  const nc   = $('u-nocache').checked;
+  const n    = $('u-needs').value.trim();
+  const srv_ = srv();
+
+  const parts=[];
+  if(page) parts.push('page='+page);
+  if(hdr)  parts.push('header=true');
+  if(n)    parts.push('needs='+n);
+  if(nc)   parts.push('nocache=1');
+
+  if(!parts.length){ $('u-url').textContent='—'; $('u-preview').textContent='—'; return; }
+
+  const url = srv_+'/bundle?'+parts.join('&');
+  $('u-url').innerHTML = colorizeUrl(url);
+
+  // Preview
+  let preview = '';
+  if(page && pages[page]){
+    const cfg = pages[page];
+    const h = cfg.head||[];
+    const b = cfg.body_end||[];
+    const extra = n ? n.split(',').map(s=>s.trim()).filter(Boolean) : [];
+    preview = [
+      `Página: ${page}`,
+      h.length ? `  head     → ${h.join(' → ')}` : '  head     → (vacío)',
+      (!hdr && b.length) ? `  body_end → ${b.join(' → ')}` : hdr ? '  body_end → (omitido, solo head)' : '  body_end → (vacío)',
+      extra.length ? `  extra    → ${extra.join(', ')}` : '',
+    ].filter(Boolean).join('\n');
+  } else if(n) {
+    preview = `?needs → ${n}`;
+  }
+  $('u-preview').textContent = preview || '—';
+}
+
+function openUrlPanel(){
+  const url = ($('u-url').textContent||$('u-url').innerText).trim();
+  if(!url||url==='—') return toast('Configura la URL primero','warn');
+  window.open(url,'_blank');
+}
+
+function copyUrlPanel(){
+  const url = ($('u-url').textContent||$('u-url').innerText).trim();
+  if(!url||url==='—') return;
+  navigator.clipboard?.writeText(url);
+  toast('✓ URL copiada');
+}
+
+function copyTag(){
+  const url = ($('u-url').textContent||$('u-url').innerText).trim();
+  if(!url||url==='—') return toast('Configura la URL primero','warn');
+  navigator.clipboard?.writeText(`<script src="${url}"><\/script>`);
+  toast('✓ Tag copiado');
+}
+
+// ── Invalidate ─────────────────────────────────────────────────────────────
+async function invalidate(){
   try {
-    const res = await fetch(`${server()}/bundle/invalidate`, {
-      method: 'POST',
-      headers: headers(),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error);
-    toast(`✓ Cache limpiada — módulos: ${data.cleared.modules}, bundles: ${data.cleared.bundles}`);
-  } catch (e) {
-    toast('Error: ' + e.message, 'err');
-  }
+    const res = await fetch(`${srv()}/bundle/invalidate`,{method:'POST',headers:hdrs()});
+    const d = await res.json();
+    if(!d.ok) throw new Error(d.error);
+    toast(`✓ Cache limpiada — módulos: ${d.cleared.modules}, bundles: ${d.cleared.bundles}`);
+  } catch(e){ toast(e.message,'er'); }
 }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-document.getElementById('api-key').addEventListener('keydown', e => {
-  if (e.key === 'Enter') loadModules();
-});
-document.getElementById('server-url').addEventListener('keydown', e => {
-  if (e.key === 'Enter') loadModules();
-});
+// ── Init ───────────────────────────────────────────────────────────────────
+$('srv').addEventListener('keydown', e=>{ if(e.key==='Enter') connect(); });
+$('apikey').addEventListener('keydown', e=>{ if(e.key==='Enter') connect(); });
+setTesterMode('needs');
+connect()
 </script>
 </body>
 </html>
