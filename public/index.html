@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Bundle Admin</title>
+<style>
+  :root {
+    --bg:       #0f0f0f;
+    --surface:  #181818;
+    --surface2: #212121;
+    --border:   #2a2a2a;
+    --border2:  #363636;
+    --accent:   #7c6ef0;
+    --accent2:  #5c50c8;
+    --text:     #e8e6f0;
+    --muted:    #6b6880;
+    --ok:       #4caf82;
+    --err:      #e05a5a;
+    --warn:     #d4943a;
+    --mono:     'DM Mono', 'Fira Mono', monospace;
+    --sans:     'Inter', system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  header .logo {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  header .sep { flex: 1; }
+
+  #status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background .3s;
+  }
+  #status-dot.ok  { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  #status-dot.err { background: var(--err); }
+
+  #status-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  /* ── Auth bar ── */
+  #auth-bar {
+    display: flex;
+    gap: 8px;
+    padding: 10px 24px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+  }
+
+  #auth-bar label {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    white-space: nowrap;
+  }
+
+  /* ── Layout ── */
+  .layout {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+  }
+
+  .sidebar-header {
+    padding: 14px 16px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-header h2 {
+    font-size: 11px;
+    font-family: var(--mono);
+    letter-spacing: .1em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  #module-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+
+  .mod-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all .15s;
+    margin-bottom: 2px;
+  }
+
+  .mod-item:hover { background: var(--surface2); border-color: var(--border); }
+
+  .mod-item.active {
+    background: #1e1a3a;
+    border-color: var(--accent);
+  }
+
+  .mod-icon {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent);
+    width: 18px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .mod-name {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mod-deps-badge {
+    font-size: 10px;
+    color: var(--muted);
+    background: var(--border);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: var(--mono);
+  }
+
+  .sidebar-footer {
+    padding: 10px 8px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+  }
+
+  /* ── Main panel ── */
+  .main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface);
+  }
+
+  .panel-header h1 {
+    font-size: 14px;
+    font-weight: 500;
+    font-family: var(--mono);
+    flex: 1;
+  }
+
+  .panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+  }
+
+  /* ── Empty state ── */
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 12px;
+    color: var(--muted);
+  }
+
+  .empty-glyph {
+    font-family: var(--mono);
+    font-size: 32px;
+    color: var(--border2);
+  }
+
+  .empty p { font-size: 12px; }
+
+  /* ── Form ── */
+  .form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    max-width: 680px;
+  }
+
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .form-group.full { grid-column: 1 / -1; }
+
+  .form-group label {
+    font-size: 10px;
+    font-family: var(--mono);
+    letter-spacing: .08em;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+
+  .form-group .hint {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: -2px;
+  }
+
+  /* ── Inputs ── */
+  input, select, textarea {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--mono);
+    font-size: 12px;
+    width: 100%;
+    transition: border-color .15s;
+    outline: none;
+  }
+
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--accent);
+  }
+
+  textarea { resize: vertical; min-height: 80px; }
+
+  select option { background: var(--surface2); }
+
+  /* ── Deps tags ── */
+  .deps-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    min-height: 38px;
+  }
+
+  .dep-tag {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: #1e1a3a;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+
+  .dep-tag button {
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0;
+    line-height: 1;
+  }
+
+  .dep-add {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  /* ── Buttons ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border-radius: 6px;
+    border: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+    white-space: nowrap;
+  }
+
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) { background: var(--accent2); }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .btn-ghost:hover:not(:disabled) { border-color: var(--border2); color: var(--text); }
+
+  .btn-danger {
+    background: transparent;
+    color: var(--err);
+    border: 1px solid #3a2020;
+  }
+  .btn-danger:hover:not(:disabled) { background: #2a1414; }
+
+  .btn-ok {
+    background: transparent;
+    color: var(--ok);
+    border: 1px solid #1a3028;
+  }
+  .btn-ok:hover:not(:disabled) { background: #0f2018; }
+
+  .btn-sm { padding: 5px 10px; font-size: 11px; }
+
+  /* ── Divider ── */
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 20px 0;
+  }
+
+  /* ── Section label ── */
+  .section-label {
+    font-size: 10px;
+    font-family: var(--mono);
+    letter-spacing: .1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+
+  /* ── Toast ── */
+  #toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    display: none;
+    z-index: 999;
+    max-width: 340px;
+    border: 1px solid;
+  }
+
+  #toast.ok  { background: #0f2018; border-color: var(--ok);  color: var(--ok); }
+  #toast.err { background: #2a1414; border-color: var(--err); color: var(--err); }
+  #toast.warn { background: #201a0a; border-color: var(--warn); color: var(--warn); }
+
+  /* ── Bundle tester ── */
+  .test-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .test-output {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 8px;
+    padding: 10px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    min-height: 40px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  /* ── Info row ── */
+  .info-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .info-chip {
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+  /* ── Loader spinner ── */
+  .spin {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid var(--border2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">⬡ Bundle Admin</span>
+  <span class="sep"></span>
+  <div id="status-dot"></div>
+  <span id="status-label">—</span>
+</header>
+
+<div id="auth-bar">
+  <label>SERVER</label>
+  <input id="server-url" type="text" value="https://fireserver.onrender.com" style="width:240px"/>
+  <label style="margin-left:8px">API KEY</label>
+  <input id="api-key" type="password" placeholder="x-api-key" style="width:180px"/>
+  <button class="btn btn-ghost btn-sm" onclick="loadModules()">Conectar</button>
+  <span class="sep"></span>
+  <button class="btn btn-ghost btn-sm" onclick="openTestPanel()">Probar bundle</button>
+  <button class="btn btn-ghost btn-sm" onclick="invalidateCache()">Invalidar cache</button>
+</div>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h2>Módulos <span id="mod-count" style="color:var(--text)"></span></h2>
+      <div class="spin" id="list-spin" style="display:none"></div>
+    </div>
+    <div id="module-list">
+      <div class="empty" style="height:200px">
+        <span class="empty-glyph">{ }</span>
+        <p>Conecta para ver módulos</p>
+      </div>
+    </div>
+    <div class="sidebar-footer">
+      <button class="btn btn-primary btn-sm" style="flex:1" onclick="newModule()">+ Nuevo</button>
+      <button class="btn btn-ghost btn-sm" onclick="loadModules()">↻</button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <div class="panel-header">
+      <h1 id="panel-title" style="color:var(--muted)">— selecciona un módulo —</h1>
+      <div id="panel-actions" style="display:flex;gap:8px"></div>
+    </div>
+    <div class="panel-body" id="panel-body">
+      <div class="empty">
+        <span class="empty-glyph">⬡</span>
+        <p>Selecciona un módulo en la lista o crea uno nuevo</p>
+      </div>
+    </div>
+  </main>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let manifest = {};
+let activeKey = null;
+let isNew = false;
+
+function server() { return document.getElementById('server-url').value.replace(/\/$/, ''); }
+function apiKey() { return document.getElementById('api-key').value; }
+
+function headers() {
+  return {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey(),
+  };
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, type = 'ok') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = type;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.style.display = 'none', 3200);
+}
+
+// ── Status dot ───────────────────────────────────────────────────────────────
+function setStatus(state, label) {
+  const dot = document.getElementById('status-dot');
+  const lbl = document.getElementById('status-label');
+  dot.className = state;
+  lbl.textContent = label;
+}
+
+// ── Load modules ─────────────────────────────────────────────────────────────
+async function loadModules() {
+  const spin = document.getElementById('list-spin');
+  spin.style.display = 'block';
+  setStatus('', 'conectando…');
+
+  try {
+    const res = await fetch(`${server()}/bundle/list`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    // Rebuild manifest from list + fetch raw for editing
+    await loadRawManifest();
+
+    renderList(data.modules || []);
+    document.getElementById('mod-count').textContent = `(${Object.keys(manifest).length})`;
+    setStatus('ok', `${server()}`);
+  } catch (e) {
+    setStatus('err', e.message);
+    toast('No se pudo conectar: ' + e.message, 'err');
+  } finally {
+    spin.style.display = 'none';
+  }
+}
+
+async function loadRawManifest() {
+  const res = await fetch(`${server()}/get/bundle_manifest`);
+  if (!res.ok) return;
+  const data = await res.json();
+  manifest = data.value || {};
+}
+
+// ── Render list ──────────────────────────────────────────────────────────────
+function renderList(modules) {
+  const list = document.getElementById('module-list');
+  if (!modules.length) {
+    list.innerHTML = `<div class="empty" style="height:160px"><span class="empty-glyph">{ }</span><p>Sin módulos aún</p></div>`;
+    return;
+  }
+
+  list.innerHTML = modules.map(m => `
+    <div class="mod-item ${m.name === activeKey ? 'active' : ''}"
+         onclick="selectModule('${m.name}')">
+      <span class="mod-icon">js</span>
+      <span class="mod-name">${m.name}</span>
+      ${m.deps && m.deps.length ? `<span class="mod-deps-badge">${m.deps.length}d</span>` : ''}
+    </div>
+  `).join('');
+}
+
+// ── Select module ────────────────────────────────────────────────────────────
+function selectModule(name) {
+  activeKey = name;
+  isNew = false;
+  highlightActive();
+  renderEditor(name, manifest[name] || {});
+}
+
+function highlightActive() {
+  document.querySelectorAll('.mod-item').forEach(el => {
+    el.classList.toggle('active', el.textContent.trim().startsWith('js') &&
+      el.querySelector('.mod-name')?.textContent === activeKey);
+  });
+}
+
+// ── New module ───────────────────────────────────────────────────────────────
+function newModule() {
+  activeKey = null;
+  isNew = true;
+  document.querySelectorAll('.mod-item').forEach(el => el.classList.remove('active'));
+  renderEditor(null, {});
+}
+
+// ── Render editor ────────────────────────────────────────────────────────────
+function renderEditor(name, mod) {
+  const title = document.getElementById('panel-title');
+  const actions = document.getElementById('panel-actions');
+  const body = document.getElementById('panel-body');
+
+  title.textContent = isNew ? '+ nuevo módulo' : name;
+  title.style.color = isNew ? 'var(--accent)' : 'var(--text)';
+
+  const filename = mod.githubPath ? mod.githubPath.split('/').pop() : '';
+  const deps = mod.deps || [];
+  const branch = mod.branch || '';
+
+  // Info row (solo edit)
+  const infoRow = !isNew && mod.githubPath ? `
+    <div class="info-row">
+      <span>ruta resuelta:</span>
+      <span class="info-chip">public/js_modules/${filename}</span>
+      <span style="color:var(--border2)">|</span>
+      <span>branch:</span>
+      <span class="info-chip">${branch || 'main'}</span>
+    </div>
+  ` : '';
+
+  body.innerHTML = `
+    ${infoRow}
+    <div class="form-grid">
+
+      <div class="form-group">
+        <label>Nombre del módulo</label>
+        <input id="f-name" type="text" value="${name || ''}"
+               placeholder="ej: arqueomain"
+               ${!isNew ? 'readonly style="opacity:.5"' : ''}/>
+        <span class="hint">Solo letras, números, guiones</span>
+      </div>
+
+      <div class="form-group">
+        <label>Archivo (.js)</label>
+        <input id="f-file" type="text" value="${filename}"
+               placeholder="arqueomain.js"/>
+        <span class="hint">Nombre del archivo en js_modules/</span>
+      </div>
+
+      <div class="form-group">
+        <label>Branch (opcional)</label>
+        <input id="f-branch" type="text" value="${branch}"
+               placeholder="main"/>
+      </div>
+
+      <div class="form-group">
+        <label>&nbsp;</label>
+        <button class="btn btn-ghost btn-sm" onclick="previewFile()">
+          ↗ Ver en GitHub
+        </button>
+      </div>
+
+      <div class="form-group full">
+        <label>Dependencias</label>
+        <div class="deps-tags" id="deps-container">
+          ${deps.map(d => depTag(d)).join('')}
+        </div>
+        <div class="dep-add">
+          <select id="dep-select" style="width:200px">
+            <option value="">— agregar dep —</option>
+            ${Object.keys(manifest)
+              .filter(k => k !== name)
+              .map(k => `<option value="${k}">${k}</option>`).join('')}
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="addDep()">+ Agregar</button>
+        </div>
+      </div>
+
+    </div>
+
+    <hr class="divider"/>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="saveModule()">
+        ${isNew ? '+ Crear módulo' : '↑ Guardar cambios'}
+      </button>
+      ${!isNew ? `
+        <button class="btn btn-ok" onclick="testThisModule()">▷ Probar</button>
+        <button class="btn btn-danger" onclick="deleteModule('${name}')">✕ Eliminar</button>
+      ` : ''}
+      <button class="btn btn-ghost" onclick="cancelEdit()">Cancelar</button>
+    </div>
+  `;
+
+  // Actions en header
+  actions.innerHTML = !isNew ? `
+    <a href="${server()}/bundle?needs=${name}" target="_blank"
+       style="font-family:var(--mono);font-size:11px;color:var(--muted);text-decoration:none">
+      /bundle?needs=${name} ↗
+    </a>
+  ` : '';
+}
+
+function depTag(name) {
+  return `<span class="dep-tag" data-dep="${name}">
+    ${name}
+    <button onclick="removeDep('${name}')">×</button>
+  </span>`;
+}
+
+function addDep() {
+  const sel = document.getElementById('dep-select');
+  const val = sel.value;
+  if (!val) return;
+  const container = document.getElementById('deps-container');
+  if (container.querySelector(`[data-dep="${val}"]`)) return;
+  container.insertAdjacentHTML('beforeend', depTag(val));
+  sel.value = '';
+}
+
+function removeDep(name) {
+  document.querySelector(`.dep-tag[data-dep="${name}"]`)?.remove();
+}
+
+function getDeps() {
+  return [...document.querySelectorAll('.dep-tag')].map(el => el.dataset.dep);
+}
+
+// ── Save ─────────────────────────────────────────────────────────────────────
+async function saveModule() {
+  const name    = document.getElementById('f-name')?.value?.trim();
+  const file    = document.getElementById('f-file')?.value?.trim();
+  const branch  = document.getElementById('f-branch')?.value?.trim();
+  const deps    = getDeps();
+
+  if (!name) return toast('El nombre es requerido', 'err');
+  if (!file) return toast('El archivo es requerido', 'err');
+
+  const entry = {
+    githubPath: `public/js_modules/${file}`,
+    ...(branch ? { branch } : {}),
+    ...(deps.length ? { deps } : {}),
+  };
+
+  const updates = { [name]: entry };
+
+  try {
+    const res = await fetch(`${server()}/api/bundle/manifest`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify(updates),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    manifest[name] = entry;
+    activeKey = name;
+    isNew = false;
+
+    toast(`✓ ${name} guardado`);
+    await loadModules();
+    selectModule(name);
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  }
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+async function deleteModule(name) {
+  if (!confirm(`¿Eliminar "${name}" del manifest?`)) return;
+
+  try {
+    const res = await fetch(`${server()}/api/bundle/manifest/${name}`, {
+      method: 'DELETE',
+      headers: headers(),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+
+    delete manifest[name];
+    activeKey = null;
+    toast(`✓ ${name} eliminado`, 'warn');
+    await loadModules();
+    clearPanel();
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  }
+}
+
+function clearPanel() {
+  document.getElementById('panel-title').textContent = '— selecciona un módulo —';
+  document.getElementById('panel-title').style.color = 'var(--muted)';
+  document.getElementById('panel-actions').innerHTML = '';
+  document.getElementById('panel-body').innerHTML = `
+    <div class="empty">
+      <span class="empty-glyph">⬡</span>
+      <p>Selecciona un módulo o crea uno nuevo</p>
+    </div>`;
+}
+
+function cancelEdit() {
+  if (activeKey && !isNew) {
+    selectModule(activeKey);
+  } else {
+    isNew = false;
+    activeKey = null;
+    clearPanel();
+  }
+}
+
+// ── Preview in GitHub ─────────────────────────────────────────────────────────
+function previewFile() {
+  const file   = document.getElementById('f-file')?.value?.trim();
+  const branch = document.getElementById('f-branch')?.value?.trim() || 'main';
+  if (!file) return toast('Ingresa el nombre del archivo primero', 'warn');
+  // No tenemos REPO info en el cliente, abrimos el bundle directo
+  const name = document.getElementById('f-name')?.value?.trim();
+  if (name && manifest[name]) {
+    window.open(`${server()}/bundle?needs=${name}&nocache=1`, '_blank');
+  } else {
+    toast('Guarda el módulo primero para probarlo', 'warn');
+  }
+}
+
+// ── Test this module ──────────────────────────────────────────────────────────
+function testThisModule() {
+  openTestPanel(activeKey);
+}
+
+// ── Test panel ────────────────────────────────────────────────────────────────
+function openTestPanel(preload) {
+  const body   = document.getElementById('panel-body');
+  const title  = document.getElementById('panel-title');
+  const actions = document.getElementById('panel-actions');
+  activeKey = null;
+  isNew = false;
+  document.querySelectorAll('.mod-item').forEach(el => el.classList.remove('active'));
+
+  title.textContent = 'Probar bundle';
+  title.style.color = 'var(--text)';
+  actions.innerHTML = '';
+
+  const mods = Object.keys(manifest).join(', ');
+
+  body.innerHTML = `
+    <p class="section-label">Genera y prueba un bundle con los módulos que elijas</p>
+    <div class="test-row">
+      <input id="test-needs" type="text"
+             value="${preload || ''}"
+             placeholder="arqueomain, screenSmart, …"
+             style="flex:1"/>
+      <button class="btn btn-primary" onclick="runTest()">▷ Generar</button>
+      <button class="btn btn-ghost" onclick="runTestNewTab()">↗ Nueva pestaña</button>
+    </div>
+    <p style="font-size:10px;color:var(--muted);margin-top:6px;font-family:var(--mono)">
+      Disponibles: ${mods}
+    </p>
+    <div class="test-output" id="test-out">Resultado aparecerá aquí…</div>
+
+    <hr class="divider"/>
+    <p class="section-label">URL generada</p>
+    <div class="test-output" id="test-url" style="min-height:unset"></div>
+  `;
+}
+
+async function runTest() {
+  const needs = document.getElementById('test-needs').value.trim();
+  if (!needs) return toast('Ingresa al menos un módulo', 'warn');
+
+  const url = `${server()}/bundle?needs=${needs}`;
+  document.getElementById('test-url').textContent = url;
+
+  const out = document.getElementById('test-out');
+  out.textContent = 'Cargando…';
+
+  try {
+    const t0  = Date.now();
+    const res = await fetch(url);
+    const ms  = Date.now() - t0;
+
+    if (!res.ok) {
+      const err = await res.json();
+      out.textContent = `✗ Error ${res.status}: ${err.error}`;
+      return;
+    }
+
+    const text  = await res.text();
+    const cache = res.headers.get('X-Bundle-Cache') || '?';
+    const mods  = res.headers.get('X-Bundle-Modules') || needs;
+    const kb    = (text.length / 1024).toFixed(1);
+
+    out.textContent = [
+      `✓ ${ms}ms | ${kb} KB | cache: ${cache}`,
+      `módulos: ${mods}`,
+      ``,
+      text.slice(0, 600) + (text.length > 600 ? '\n…' : ''),
+    ].join('\n');
+
+  } catch (e) {
+    out.textContent = '✗ ' + e.message;
+  }
+}
+
+function runTestNewTab() {
+  const needs = document.getElementById('test-needs')?.value?.trim();
+  if (!needs) return toast('Ingresa módulos primero', 'warn');
+  window.open(`${server()}/bundle?needs=${needs}`, '_blank');
+}
+
+// ── Invalidate cache ──────────────────────────────────────────────────────────
+async function invalidateCache() {
+  try {
+    const res = await fetch(`${server()}/bundle/invalidate`, {
+      method: 'POST',
+      headers: headers(),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error);
+    toast(`✓ Cache limpiada — módulos: ${data.cleared.modules}, bundles: ${data.cleared.bundles}`);
+  } catch (e) {
+    toast('Error: ' + e.message, 'err');
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.getElementById('api-key').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadModules();
+});
+document.getElementById('server-url').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadModules();
+});
+</script>
+</body>
+</html>

@@ -4,6 +4,11 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const admin = require('firebase-admin');
+const path = require('path');
+const fs   = require('fs');
+
+const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, 'public');
+
 
 admin.initializeApp({
     credential: admin.credential.cert({
@@ -1587,6 +1592,13 @@ app.post('/bundle/invalidate', ensureAuth, async (req, res) => {
     res.json({ ok: true, cleared: { modules: mc, bundles: bc } });
 });
 
+app.get('/console', (req, res) => {
+    const index = path.join(PUBLIC_DIR, 'index.html');
+    if (!fs.existsSync(index)) {
+        return res.status(404).send('index.html not found');
+    }
+    res.sendFile(index);
+});
 
 // ════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
