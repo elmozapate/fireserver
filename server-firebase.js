@@ -7,7 +7,7 @@ const admin = require('firebase-admin');
 const path = require('path');
 const fs   = require('fs');
 
-const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, 'public');
+const PUBLIC_DIR = path.join(__dirname, 'public');
 
 
 admin.initializeApp({
