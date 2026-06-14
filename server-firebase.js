@@ -136,6 +136,9 @@ function ensureAuth(req, res, next) {
 const LIBRARY_KEY = 'library_index';
 
 const TYPE_TO_LIST = {
+    page: 'pages',
+    file: 'files',
+    asset: 'assets',
     service: 'services',
     template: 'templates',
     json: 'jsons',
@@ -230,9 +233,11 @@ async function syncToLibrary(key, value, extra = {}) {
     const idx = library[listName].findIndex(e => e.id === entry.id);
 
     if (idx >= 0) {
+        // Preserva createdAt original
         entry.createdAt = library[listName][idx].createdAt;
         library[listName][idx] = entry;
     } else {
+        // Nueva entrada: se inserta completa tal como viene
         library[listName].push(entry);
     }
 
