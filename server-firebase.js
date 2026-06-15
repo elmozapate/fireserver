@@ -5,7 +5,8 @@ const cors = require('cors');
 const fetch = require('node-fetch');
 const admin = require('firebase-admin');
 const path = require('path');
-const fs   = require('fs');
+const fs = require('fs');
+const crypto = require('crypto');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
@@ -1328,7 +1329,7 @@ async function fetchBundleModule(name, mod) {
 // ─── Libmod file fetcher ──────────────────────────────────────────────────
 
 async function fetchLibmodFile(libmodName, basePath, fileEntry, branchOverride) {
-    const fileName  = typeof fileEntry === 'string' ? fileEntry : fileEntry.file;
+    const fileName = typeof fileEntry === 'string' ? fileEntry : fileEntry.file;
     const fileLabel = typeof fileEntry === 'string' ? '' : (fileEntry.label || '');
     const resolvedPath = basePath
         ? `${basePath}/${fileName}`.replace(/\/\//g, '/')
@@ -1355,7 +1356,7 @@ async function fetchLibmodFile(libmodName, basePath, fileEntry, branchOverride) 
     }
 
     const data = await ghRes.json();
-    const raw  = Buffer.from(data.content, 'base64').toString('utf8');
+    const raw = Buffer.from(data.content, 'base64').toString('utf8');
     const comment = fileLabel
         ? `/* ── ${libmodName}/${fileName} — ${fileLabel} ── */`
         : `/* ── ${libmodName}/${fileName} ── */`;
@@ -1376,12 +1377,27 @@ async function buildBundle(orderedNames, manifest) {
 
 // ─── Libmod bundle builder ────────────────────────────────────────────────
 
-async function buildLibmodBundle(libmodName, cfg, headerOnly = false) {
-    const basePath  = cfg.basePath || '';
-    const branch    = cfg.branch   || DEFAULT_BRANCH;
-    const headFiles = cfg.head     || [];
+// ─── LibMod bundle builder ────────────────────────────────────────────────
+//
+// mode:
+//   'header'   -> solo cfg.head
+//   'body_end' -> solo cfg.body_end
+//   'full'     -> ambos
+//
+async function buildLibmodBundle(libmodName, cfg, mode = 'full') {
+    const basePath = cfg.basePath || '';
+    const branch = cfg.branch || DEFAULT_BRANCH;
+    const headFiles = cfg.head || [];
     const bodyFiles = cfg.body_end || [];
-    const filesToLoad = headerOnly ? headFiles : [...headFiles, ...bodyFiles];
+
+    let filesToLoad = [];
+    if (mode === 'header') {
+        filesToLoad = headFiles;
+    } else if (mode === 'body_end') {
+        filesToLoad = bodyFiles;
+    } else {
+        filesToLoad = [...headFiles, ...bodyFiles];
+    }
 
     const parts = await Promise.all(
         filesToLoad.map(f => fetchLibmodFile(libmodName, basePath, f, branch))
@@ -1391,8 +1407,13 @@ async function buildLibmodBundle(libmodName, cfg, headerOnly = false) {
         `/* LibMod: ${libmodName} (${new Date().toISOString()}) */`,
         cfg.description ? `/* ${cfg.description} */` : '',
         `/* base: ${basePath || '/'} @ ${branch} */`,
-        headFiles.length ? `/* head:     ${headFiles.map(f => f.file || f).join(' → ')} */` : '',
-        !headerOnly && bodyFiles.length ? `/* body_end: ${bodyFiles.map(f => f.file || f).join(' → ')} */` : '',
+        `/* mode: ${mode} */`,
+        mode !== 'body_end' && headFiles.length
+            ? `/* head:     ${headFiles.map(f => f.file || f).join(' → ')} */`
+            : '',
+        mode !== 'header' && bodyFiles.length
+            ? `/* body_end: ${bodyFiles.map(f => f.file || f).join(' → ')} */`
+            : '',
         '',
     ].filter(Boolean).join('\n');
 
@@ -1400,15 +1421,20 @@ async function buildLibmodBundle(libmodName, cfg, headerOnly = false) {
 }
 
 // ─── Resolver principal ───────────────────────────────────────────────────
-
-async function resolveModules({ page, needs, headerOnly }, manifest, pages) {
+//
+// bundleMode:
+//   'header'   -> solo head
+//   'body_end' -> solo body_end
+//   'full'     -> ambos
+//
+async function resolveModules({ page, needs, bundleMode = 'full' }, manifest, pages) {
     let headMods = [];
     let bodyEndMods = [];
 
     if (page) {
         const cfg = pages[page];
         if (!cfg) throw new Error(`Página desconocida: "${page}"`);
-        headMods    = cfg.head     || [];
+        headMods = cfg.head || [];
         bodyEndMods = cfg.body_end || [];
     }
 
@@ -1422,10 +1448,17 @@ async function resolveModules({ page, needs, headerOnly }, manifest, pages) {
         }
     }
 
-    const sortedHead    = headMods.length    ? topoSort(headMods,    manifest) : [];
+    const sortedHead = headMods.length ? topoSort(headMods, manifest) : [];
     const sortedBodyEnd = bodyEndMods.length ? topoSort(bodyEndMods, manifest) : [];
 
-    if (headerOnly) return { head: sortedHead, body_end: [] };
+    if (bundleMode === 'header') {
+        return { head: sortedHead, body_end: [] };
+    }
+
+    if (bundleMode === 'body_end') {
+        return { head: [], body_end: sortedBodyEnd };
+    }
+
     return { head: sortedHead, body_end: sortedBodyEnd };
 }
 
@@ -1434,18 +1467,23 @@ async function resolveModules({ page, needs, headerOnly }, manifest, pages) {
 //  ?needs=a,b,c                        → módulos directos
 //  ?page=dabeiba                       → preset completo
 //  ?page=dabeiba&header=true           → solo head del preset
+//  ?page=dabeiba&bodyend=true          → solo body_end del preset
 //  ?page=dabeiba&needs=a,b             → preset + extras en body_end
 //  ?libmod=avatarStudio                → library module completo
 //  ?libmod=avatarStudio&header=true    → solo head del libmod
+//  ?libmod=avatarStudio&bodyend=true   → solo body_end del libmod
 //  ?page=X&libmod=Y&needs=Z            → todo combinado
 //  &nocache=1                          → salta bundle cache
 //
 app.get('/bundle', async (req, res) => {
-    const pageParam   = req.query.page?.trim();
-    const needsParam  = req.query.needs;
+    const pageParam = req.query.page?.trim();
+    const needsParam = req.query.needs;
     const libmodParam = req.query.libmod?.trim();
-    const headerOnly  = req.query.header === 'true';
-    const nocache     = req.query.nocache === '1';
+    const headerOnly = req.query.header === 'true';
+    const bodyendOnly = req.query.bodyend === 'true';
+    const nocache = req.query.nocache === '1';
+
+    const bundleMode = headerOnly ? 'header' : (bodyendOnly ? 'body_end' : 'full');
 
     if (!pageParam && !needsParam && !libmodParam) {
         return res.status(400).json({
@@ -1460,30 +1498,36 @@ app.get('/bundle', async (req, res) => {
     try {
         const [manifest, pages, libmods] = await Promise.all([
             getBundleManifest(),
-            (pageParam || needsList.length) ? getBundlePages()   : Promise.resolve({}),
-            libmodParam                     ? getBundleLibmods() : Promise.resolve({}),
+            (pageParam || needsList.length) ? getBundlePages() : Promise.resolve({}),
+            libmodParam ? getBundleLibmods() : Promise.resolve({}),
         ]);
 
         // ── Módulos normales (page + needs) ───────────────────────────────
         let modulesBundle = '';
-        let headMods = [], bodyMods = [];
+        let headMods = [];
+        let bodyMods = [];
 
         if (pageParam || needsList.length) {
-            if (!Object.keys(manifest).length)
+            if (!Object.keys(manifest).length) {
                 return res.status(404).json({ error: 'bundle_manifest vacío' });
+            }
 
             const resolved = await resolveModules(
-                { page: pageParam, needs: needsList, headerOnly },
+                { page: pageParam, needs: needsList, bundleMode },
                 manifest,
                 pages,
             );
+
             headMods = resolved.head;
             bodyMods = resolved.body_end;
 
             const allOrdered = [...headMods, ...bodyMods];
+
             const hdr = [
                 `/* Bundle: ${new Date().toISOString()} */`,
+                `/* Mode: ${bundleMode} */`,
                 pageParam ? `/* Page: ${pageParam} */` : '',
+                needsList.length ? `/* Needs: ${needsList.join(' → ')} */` : '',
                 headMods.length ? `/* Head:     ${headMods.join(' → ')} */` : '',
                 bodyMods.length ? `/* Body-end: ${bodyMods.join(' → ')} */` : '',
                 '',
@@ -1494,43 +1538,53 @@ app.get('/bundle', async (req, res) => {
 
         // ── LibraryModule ─────────────────────────────────────────────────
         let libBundle = '';
-        let libHeadFiles = [], libBodyFiles = [];
+        let libHeadFiles = [];
+        let libBodyFiles = [];
 
         if (libmodParam) {
             const cfg = libmods[libmodParam];
-            if (!cfg) return res.status(404).json({ error: `LibMod desconocido: "${libmodParam}"` });
+            if (!cfg) {
+                return res.status(404).json({ error: `LibMod desconocido: "${libmodParam}"` });
+            }
 
-            const libCacheKey = `libmod:${libmodParam}:${headerOnly ? 'head' : 'full'}`;
+            const libCacheKey = `libmod:${libmodParam}:${bundleMode}`;
 
             if (!nocache && BUNDLE_CACHE_MAP.has(libCacheKey)) {
                 console.log(`[bundle] libmod cache hit: ${libCacheKey}`);
                 libBundle = BUNDLE_CACHE_MAP.get(libCacheKey);
             } else {
-                libBundle = await buildLibmodBundle(libmodParam, cfg, headerOnly);
-                BUNDLE_CACHE_MAP.set(libCacheKey, libBundle);
+                libBundle = await buildLibmodBundle(libmodParam, cfg, bundleMode);
+                if (!nocache) BUNDLE_CACHE_MAP.set(libCacheKey, libBundle);
             }
 
-            libHeadFiles = (cfg.head     || []).map(f => f.file || f);
-            libBodyFiles = headerOnly ? [] : (cfg.body_end || []).map(f => f.file || f);
+            libHeadFiles = bundleMode !== 'body_end' ? (cfg.head || []).map(f => f.file || f) : [];
+            libBodyFiles = bundleMode !== 'header' ? (cfg.body_end || []).map(f => f.file || f) : [];
         }
+
+        // ── Bundle final + hash ───────────────────────────────────────────
+        const finalBundle = modulesBundle + libBundle;
+        const bundleHash = crypto.createHash('sha256').update(finalBundle, 'utf8').digest('hex');
 
         // ── Cache global ──────────────────────────────────────────────────
         const cacheKey = [
-            pageParam   ? `page:${pageParam}`     : '',
-            libmodParam ? `lib:${libmodParam}`     : '',
-            headerOnly  ? 'head' : 'full',
-            headMods.join('+'),
-            bodyMods.join('+'),
+            pageParam ? `page:${pageParam}` : '',
+            needsList.length ? `needs:${needsList.join(',')}` : '',
+            libmodParam ? `lib:${libmodParam}` : '',
+            `mode:${bundleMode}`,
+            headMods.length ? `head:${headMods.join('+')}` : '',
+            bodyMods.length ? `body:${bodyMods.join('+')}` : '',
         ].filter(Boolean).join('|');
 
-        const finalBundle = modulesBundle + libBundle;
-
-        if (!nocache) BUNDLE_CACHE_MAP.set(cacheKey, finalBundle);
+        if (!nocache) {
+            BUNDLE_CACHE_MAP.set(cacheKey, finalBundle);
+        }
 
         res.set('Content-Type', 'application/javascript; charset=utf-8');
-        res.set('X-Bundle-Cache',       'MISS');
-        res.set('X-Bundle-Head',        headMods.join(', '));
-        res.set('X-Bundle-Body-End',    bodyMods.join(', '));
+        res.set('X-Bundle-Cache', nocache ? 'BYPASS' : 'MISS');
+        res.set('X-Bundle-Mode', bundleMode);
+        res.set('X-Bundle-Hash', bundleHash);
+        res.set('X-Bundle-Head', headMods.join(', '));
+        res.set('X-Bundle-Body-End', bodyMods.join(', '));
         res.set('X-Bundle-LibMod-Head', libHeadFiles.join(', '));
         res.set('X-Bundle-LibMod-Body', libBodyFiles.join(', '));
         res.send(finalBundle);
@@ -1563,15 +1617,15 @@ app.get('/bundle/list', async (req, res) => {
             pages: Object.entries(pages).map(([name, cfg]) => ({
                 name,
                 description: cfg.description || '',
-                head:     cfg.head     || [],
+                head: cfg.head || [],
                 body_end: cfg.body_end || [],
             })),
             libmods: Object.entries(libmods).map(([name, cfg]) => ({
                 name,
                 description: cfg.description || '',
                 basePath: cfg.basePath || '',
-                branch:   cfg.branch   || DEFAULT_BRANCH,
-                head:     cfg.head     || [],
+                branch: cfg.branch || DEFAULT_BRANCH,
+                head: cfg.head || [],
                 body_end: cfg.body_end || [],
             })),
         });
@@ -1602,7 +1656,7 @@ app.patch('/api/bundle/manifest', ensureAuth, async (req, res) => {
         if (!updates || typeof updates !== 'object' || Array.isArray(updates))
             return res.status(400).json({ ok: false, error: 'Body debe ser objeto { modName: {...} }' });
         const current = await getBundleManifest();
-        const merged  = { ...current, ...updates };
+        const merged = { ...current, ...updates };
         await saveBundleManifest(merged);
         res.json({ ok: true, updated: Object.keys(updates), total: Object.keys(merged).length });
     } catch (err) {
@@ -1648,7 +1702,7 @@ app.patch('/api/bundle/pages', ensureAuth, async (req, res) => {
         if (!updates || typeof updates !== 'object' || Array.isArray(updates))
             return res.status(400).json({ ok: false, error: 'Body debe ser objeto { pageName: {...} }' });
         const current = await getBundlePages();
-        const merged  = { ...current, ...updates };
+        const merged = { ...current, ...updates };
         await saveBundlePages(merged);
         res.json({ ok: true, updated: Object.keys(updates), total: Object.keys(merged).length });
     } catch (err) {
@@ -1696,8 +1750,8 @@ app.get('/api/bundle/libmods', async (req, res) => {
                 name,
                 description: cfg.description || '',
                 basePath: cfg.basePath || '',
-                branch:   cfg.branch   || DEFAULT_BRANCH,
-                head:     cfg.head     || [],
+                branch: cfg.branch || DEFAULT_BRANCH,
+                head: cfg.head || [],
                 body_end: cfg.body_end || [],
             })),
         });
@@ -1741,7 +1795,7 @@ app.patch('/api/bundle/libmods', ensureAuth, async (req, res) => {
         if (!updates || typeof updates !== 'object' || Array.isArray(updates))
             return res.status(400).json({ ok: false, error: 'Body debe ser { libmodName: {...} }' });
         const current = await getBundleLibmods();
-        const merged  = { ...current, ...updates };
+        const merged = { ...current, ...updates };
         await saveBundleLibmods(merged);
         res.json({ ok: true, updated: Object.keys(updates), total: Object.keys(merged).length });
     } catch (err) {
