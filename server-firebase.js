@@ -1691,7 +1691,6 @@ app.get('/bundle', async (req, res) => {
     const headerOnly = req.query.header === 'true';
     const bodyendOnly = req.query.bodyend === 'true';
     const nocache = req.query.nocache === '1';
-
     const bundleMode = headerOnly ? 'header' : (bodyendOnly ? 'body_end' : 'full');
 
     if (!pageParam && !needsParam && !libmodParam) {
@@ -1704,6 +1703,33 @@ app.get('/bundle', async (req, res) => {
         ? needsParam.split(',').map(s => s.trim()).filter(Boolean)
         : [];
 
+    // ── Cache hit temprano — antes de cualquier fetch ─────────────────────
+    if (!nocache) {
+        // Construimos el cacheKey con lo que sabemos de la URL
+        // (sin headMods/bodyMods aún, eso es para el key completo post-build)
+        const quickKey = [
+            pageParam ? `page:${pageParam}` : '',
+            needsList.length ? `needs:${needsList.join(',')}` : '',
+            libmodParam ? `lib:${libmodParam}` : '',
+            `mode:${bundleMode}`,
+        ].filter(Boolean).join('|');
+
+        if (BUNDLE_CACHE_MAP.has(quickKey)) {
+            const cached = BUNDLE_CACHE_MAP.get(quickKey);
+            const etag = `"${crypto.createHash('sha256').update(cached, 'utf8').digest('hex')}"`;
+            const clientTag = req.headers['if-none-match'];
+
+            res.set('Content-Type', 'application/javascript; charset=utf-8');
+            res.set('ETag', etag);
+            res.set('Cache-Control', 'no-cache');
+            res.set('X-Bundle-Cache', 'HIT');
+            res.set('X-Bundle-Mode', bundleMode);
+
+            if (clientTag === etag) return res.status(304).end();
+            return res.send(cached);
+        }
+    }
+
     try {
         const [manifest, pages, libmods] = await Promise.all([
             getBundleManifest(),
@@ -1711,7 +1737,7 @@ app.get('/bundle', async (req, res) => {
             libmodParam ? getBundleLibmods() : Promise.resolve({}),
         ]);
 
-        // ── Módulos normales (page + needs) ───────────────────────────────
+        // ── Módulos normales ──────────────────────────────────────────────
         let modulesBundle = '';
         let headMods = [];
         let bodyMods = [];
@@ -1729,14 +1755,13 @@ app.get('/bundle', async (req, res) => {
 
             headMods = resolved.head;
             bodyMods = resolved.body_end;
-
             const allOrdered = [...headMods, ...bodyMods];
 
             const hdr = [
                 `/* Bundle: ${new Date().toISOString()} */`,
                 `/* Mode: ${bundleMode} */`,
-                pageParam ? `/* Page: ${pageParam} */` : '',
-                needsList.length ? `/* Needs: ${needsList.join(' → ')} */` : '',
+                pageParam ? `/* Page:     ${pageParam} */` : '',
+                needsList.length ? `/* Needs:    ${needsList.join(' → ')} */` : '',
                 headMods.length ? `/* Head:     ${headMods.join(' → ')} */` : '',
                 bodyMods.length ? `/* Body-end: ${bodyMods.join(' → ')} */` : '',
                 '',
@@ -1757,9 +1782,7 @@ app.get('/bundle', async (req, res) => {
             }
 
             const libCacheKey = `libmod:${libmodParam}:${bundleMode}`;
-
             if (!nocache && BUNDLE_CACHE_MAP.has(libCacheKey)) {
-                console.log(`[bundle] libmod cache hit: ${libCacheKey}`);
                 libBundle = BUNDLE_CACHE_MAP.get(libCacheKey);
             } else {
                 libBundle = await buildLibmodBundle(libmodParam, cfg, bundleMode);
@@ -1770,11 +1793,12 @@ app.get('/bundle', async (req, res) => {
             libBodyFiles = bundleMode !== 'header' ? (cfg.body_end || []).map(f => f.file || f) : [];
         }
 
-        // ── Bundle final + hash ───────────────────────────────────────────
+        // ── Bundle final ──────────────────────────────────────────────────
         const finalBundle = modulesBundle + libBundle;
         const bundleHash = crypto.createHash('sha256').update(finalBundle, 'utf8').digest('hex');
+        const etag = `"${bundleHash}"`;
 
-        // ── Cache global ──────────────────────────────────────────────────
+        // ── Guardar en cache con key completo ─────────────────────────────
         const cacheKey = [
             pageParam ? `page:${pageParam}` : '',
             needsList.length ? `needs:${needsList.join(',')}` : '',
@@ -1785,9 +1809,18 @@ app.get('/bundle', async (req, res) => {
         ].filter(Boolean).join('|');
 
         if (!nocache) {
+            // Guardamos con ambas keys para que el quickKey hit funcione la próxima vez
+            const quickKey = [
+                pageParam ? `page:${pageParam}` : '',
+                needsList.length ? `needs:${needsList.join(',')}` : '',
+                libmodParam ? `lib:${libmodParam}` : '',
+                `mode:${bundleMode}`,
+            ].filter(Boolean).join('|');
+            BUNDLE_CACHE_MAP.set(quickKey, finalBundle);
             BUNDLE_CACHE_MAP.set(cacheKey, finalBundle);
         }
 
+        // ── Headers + ETag ────────────────────────────────────────────────
         res.set('Content-Type', 'application/javascript; charset=utf-8');
         res.set('X-Bundle-Cache', nocache ? 'BYPASS' : 'MISS');
         res.set('X-Bundle-Mode', bundleMode);
@@ -1796,10 +1829,10 @@ app.get('/bundle', async (req, res) => {
         res.set('X-Bundle-Body-End', bodyMods.join(', '));
         res.set('X-Bundle-LibMod-Head', libHeadFiles.join(', '));
         res.set('X-Bundle-LibMod-Body', libBodyFiles.join(', '));
-
-        const etag = `"${bundleHash}"`;
         res.set('ETag', etag);
         res.set('Cache-Control', 'no-cache');
+
+        // Si el cliente ya tiene este ETag exacto, 304 — nunca con nocache
         if (!nocache && req.headers['if-none-match'] === etag) {
             return res.status(304).end();
         }
