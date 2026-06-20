@@ -935,7 +935,7 @@
       color: var(--t3)
     }
   </style>
-  <script src="https://storeserver-b5z7.onrender.com/bundle?needs=socket.io.min"></script>
+  <script src="http://localhost:3090/bundle?needs=socketioserve"></script>
 
 </head>
 
@@ -952,7 +952,7 @@
   <!-- Connection bar -->
   <div class="conn">
     <label>Servidor</label>
-    <input id="srv" type="text" value="https://storeserver-b5z7.onrender.com" style="width:260px" />
+    <input id="srv" type="text" value="http://localhost:3090" style="width:260px" />
     <label style="margin-left:6px">API Key</label>
     <input id="apikey" type="password" value="mi_clave_privadas" placeholder="x-api-key" style="width:160px" />
     <button id="connect-btn" class="btn btn-p btn-sm" onclick="connect()">Conectar</button>
@@ -1058,9 +1058,13 @@
             <button class="btn btn-p" id="btn-run" onclick="runTest()">▷ Generar</button>
             <button class="btn btn-g" onclick="openTab()">↗ Pestaña</button>
             <button class="btn btn-g" onclick="injectScript()">⬡ Inyectar</button>
+            <label class="toggle-row" style="font-size:10px;color:var(--t3)">
+              <input type="checkbox" id="t-css" onchange="buildTestUrl()" /> CSS
+            </label>
             <label class="toggle-row" style="margin-left:auto;font-size:10px;color:var(--t3)">
               <input type="checkbox" id="t-nocache" onchange="buildTestUrl()" /> nocache
             </label>
+
             <div class="spin" id="t-spin" style="display:none"></div>
           </div>
         </div>
@@ -1104,11 +1108,15 @@
 
           <div class="url-box" id="u-url" onclick="copyUrlPanel()">—</div>
 
-          <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">
+          <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
+            <label class="toggle-row" style="font-size:10px;color:var(--lib-c)">
+              <input type="checkbox" id="u-css" onchange="buildUrlPanel()" /> /bundle/css
+            </label>
             <button class="btn btn-p btn-sm" onclick="openUrlPanel()">↗ Abrir</button>
             <button class="btn btn-g btn-sm" onclick="copyUrlPanel()">⎘ Copiar</button>
-            <button class="btn btn-g btn-sm" onclick="copyTag()">&#60;script&#62; tag</button>
+            <button class="btn btn-g btn-sm" onclick="copyTag()">&#60;script&#62; / &#60;link&#62; tag</button>
           </div>
+
 
           <div class="divider"></div>
           <div class="sec-label">Preview resolución de módulos</div>
@@ -1943,7 +1951,8 @@
     function buildTestUrl() {
       const mode = testerMode;
       const nc = $('t-nocache').checked ? '&nocache=1' : '';
-      let url = srv() + '/bundle?';
+      const cssMode = $('t-css')?.checked;
+      let url = srv() + (cssMode ? '/bundle/css?' : '/bundle?');
       const parts = [];
 
       if (mode === 'needs') {
@@ -2014,11 +2023,15 @@
         const lines = text.split('\n').length;
 
         chips.style.display = 'flex';
+        const bundleMode = res.headers.get('X-Bundle-Mode') || '';
+        const isCSS = rawUrl.includes('/bundle/css');
         chips.innerHTML = `
           <span class="chip ok">${ms} ms</span>
           <span class="chip ok">${kb} KB</span>
           <span class="chip ok">${lines} líneas</span>
           <span class="chip ${cache === 'HIT' ? 'hit' : 'mis'}">cache: ${cache}</span>
+          ${isCSS ? `<span class="chip" style="color:var(--lib-c);border-color:#5c3a10">CSS bundle</span>` : ''}
+          ${bundleMode ? `<span class="chip">mode: ${bundleMode}</span>` : ''}
           ${headM ? `<span class="chip" style="color:var(--head-c);border-color:#2a4a6a">head: ${headM}</span>` : ''}
           ${bodyM ? `<span class="chip" style="color:var(--body-c);border-color:#3a2a6a">body: ${bodyM}</span>` : ''}
           ${libH ? `<span class="chip" style="color:var(--lib-c);border-color:#5c3a10">libH: ${libH}</span>` : ''}
@@ -2089,7 +2102,9 @@
 
       if (!parts.length) { $('u-url').textContent = '—'; $('u-preview').textContent = '—'; return; }
 
-      const url = srv_ + '/bundle?' + parts.join('&');
+      const isCSSPanel = $('u-css')?.checked;
+      const url = srv_ + (isCSSPanel ? '/bundle/css?' : '/bundle?') + parts.join('&');
+
       $('u-url').innerHTML = colorizeUrl(url);
 
       // Preview
@@ -2135,9 +2150,14 @@
     function copyTag() {
       const url = ($('u-url').textContent || $('u-url').innerText).trim();
       if (!url || url === '—') return toast('Configura la URL primero', 'warn');
-      navigator.clipboard?.writeText(`<script src="${url}"><\/script>`);
-      toast('✓ Tag copiado');
+      const isCSS = $('u-css')?.checked;
+      const tag = isCSS
+        ? `<link rel="stylesheet" href="${url}">`
+        : `<script src="${url}"><\/script>`;
+      navigator.clipboard?.writeText(tag);
+      toast(`✓ ${isCSS ? '<link>' : '<script>'} tag copiado`);
     }
+
 
     // ── Invalidate ─────────────────────────────────────────────────────────────
     async function invalidate() {
@@ -2145,7 +2165,7 @@
         const res = await fetch(`${srv()}/bundle/invalidate`, { method: 'POST', headers: hdrs() });
         const d = await res.json();
         if (!d.ok) throw new Error(d.error);
-        toast(`✓ Cache limpiada — módulos: ${d.cleared.modules}, bundles: ${d.cleared.bundles}`);
+        toast(`✓ Cache limpiada — módulos: ${d.cleared.modules}, bundles: ${d.cleared.bundles}, css: ${d.cleared.css ?? 0}`);
       } catch (e) { toast(e.message, 'er'); }
     }
 
@@ -2157,8 +2177,8 @@
   </script>
 
 
-  <script src="https://storeserver-b5z7.onrender.com/bundle?page=nexus_s"></script>
-  <script src="https://storeserver-b5z7.onrender.com/bundle?libmod=utilsmodules_developer"></script>
+  <script src="http://localhost:3090/bundle?page=nexus_s"></script>
+  <script src="http://localhost:3090/bundle?libmod=utilsmodules_developer"></script>
 </body>
 
 </html>

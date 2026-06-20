@@ -10,6 +10,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const CSS_CACHE_MAP = new Map();
 
 
 admin.initializeApp({
@@ -500,6 +501,196 @@ async function PatchedResponse(req, res, mode = false
     }
 }
 
+// ─── ESM → window transformer ─────────────────────────────────────────────
+// ─── CSS/SCSS compiler ────────────────────────────────────────────────────
+
+let sass = null;
+try { sass = require('sass'); } catch (_) { /* sass opcional */ }
+
+function isStyleFile(filename) {
+    return /\.(css|scss|sass)$/i.test(filename);
+}
+
+function compileStyle(raw, filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    if ((ext === 'scss' || ext === 'sass') && sass) {
+        const result = sass.compileString(raw, { style: 'compressed' });
+        return result.css;
+    }
+    // CSS plano: devolver tal cual (o minificar básico)
+    return raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ').trim();
+}
+
+function transformToWindow(code, moduleName) {
+    // 1. Eliminar import statements y reemplazar por comentarios
+    code = code.replace(
+        /^\s*import\s+.*?from\s+['"][^'"]+['"]\s*;?\s*$/gm,
+        (match) => `/* [transformed] ${match.trim()} */`
+    );
+
+    // 2. export default X  →  window['moduleName'] = X
+    code = code.replace(
+        /^\s*export\s+default\s+/gm,
+        `window['${moduleName}'] = `
+    );
+
+    // 3. export const/let/var/function/class X  →  window.X = ...
+    code = code.replace(
+        /^\s*export\s+(const|let|var)\s+(\w+)/gm,
+        (_, keyword, name) => `window['${name}'] = (${keyword} ${name}`
+    );
+
+    // 4. export function X  →  window.X = function X
+    code = code.replace(
+        /^\s*export\s+function\s+(\w+)/gm,
+        (_, name) => `window['${name}'] = function ${name}`
+    );
+
+    // 5. export class X  →  window.X = class X
+    code = code.replace(
+        /^\s*export\s+class\s+(\w+)/gm,
+        (_, name) => `window['${name}'] = class ${name}`
+    );
+
+    // 6. export { X, Y, Z }  →  window.X = X; window.Y = Y; ...
+    code = code.replace(
+        /^\s*export\s*\{([^}]+)\}\s*;?\s*$/gm,
+        (_, names) => {
+            return names
+                .split(',')
+                .map(n => {
+                    const [local, alias] = n.trim().split(/\s+as\s+/);
+                    const exported = (alias || local).trim();
+                    const src = local.trim();
+                    return `window['${exported}'] = ${src};`;
+                })
+                .join('\n');
+        }
+    );
+
+    return code;
+}
+
+// ─── GET /bundle/window ───────────────────────────────────────────────────
+//
+//  Toma los archivos de un libmod (o módulos del manifest) en orden,
+//  transforma import/export → window, y devuelve un bundle concatenado.
+//
+//  ?libmod=avatarStudio               → todos los archivos del libmod
+//  ?libmod=avatarStudio&header=true   → solo head
+//  ?libmod=avatarStudio&bodyend=true  → solo body_end
+//  ?needs=modA,modB                   → módulos del manifest transformados
+//  ?ns=MyApp                          → namespace raíz (default: libmod name o 'Bundle')
+//  &nocache=1                         → salta cache
+//
+app.get('/bundle/window', async (req, res) => {
+    const libmodParam = req.query.libmod?.trim();
+    const needsParam = req.query.needs;
+    const nsParam = req.query.ns?.trim();
+    const headerOnly = req.query.header === 'true';
+    const bodyendOnly = req.query.bodyend === 'true';
+    const nocache = req.query.nocache === '1';
+
+    const bundleMode = headerOnly ? 'header' : (bodyendOnly ? 'body_end' : 'full');
+
+    if (!libmodParam && !needsParam) {
+        return res.status(400).json({
+            error: 'Requiere ?libmod=nombre y/o ?needs=modA,modB',
+        });
+    }
+
+    const needsList = needsParam
+        ? needsParam.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
+    try {
+        const parts = [];
+
+        // ── 1. Módulos del manifest (needs) ──────────────────────────────
+        if (needsList.length) {
+            const manifest = await getBundleManifest();
+
+            const ordered = topoSort(needsList, manifest);
+            const rawParts = await Promise.all(
+                ordered.map(name => fetchBundleModule(name, manifest[name]))
+            );
+
+            rawParts.forEach((raw, i) => {
+                const modName = nsParam || ordered[i];
+                parts.push(transformToWindow(raw, modName));
+            });
+        }
+
+        // ── 2. LibMod ─────────────────────────────────────────────────────
+        if (libmodParam) {
+            const libmods = await getBundleLibmods();
+            const cfg = libmods[libmodParam];
+            if (!cfg) {
+                return res.status(404).json({ error: `LibMod desconocido: "${libmodParam}"` });
+            }
+
+            const basePath = cfg.basePath || '';
+            const branch = cfg.branch || DEFAULT_BRANCH;
+            const ns = nsParam || libmodParam;
+
+            const headFiles = cfg.head || [];
+            const bodyFiles = cfg.body_end || [];
+            const filesToLoad = bundleMode === 'header'
+                ? headFiles
+                : bundleMode === 'body_end'
+                    ? bodyFiles
+                    : [...headFiles, ...bodyFiles];
+
+            const rawFiles = await Promise.all(
+                filesToLoad.map(f => fetchLibmodFile(libmodParam, basePath, f, branch))
+            );
+
+            rawFiles.forEach((raw, i) => {
+                const fileEntry = filesToLoad[i];
+                const fileName = (typeof fileEntry === 'string' ? fileEntry : fileEntry.file)
+                    .replace(/\.[^.]+$/, '')          // sin extensión
+                    .replace(/[^a-zA-Z0-9_$]/g, '_'); // safe identifier
+
+                // sub-namespace: window['ns']['fileName']
+                const transformed = transformToWindow(raw, `${ns}.${fileName}`);
+                parts.push(transformed);
+            });
+
+            // Inicializar namespace raíz si no existe
+            parts.unshift(`window['${ns}'] = window['${ns}'] || {};\n`);
+        }
+
+        // ── 3. Concatenar ─────────────────────────────────────────────────
+        const header = [
+            `/* Window Bundle — ${new Date().toISOString()} */`,
+            `/* Mode: ${bundleMode} */`,
+            libmodParam ? `/* LibMod: ${libmodParam} */` : '',
+            needsList.length ? `/* Needs: ${needsList.join(' → ')} */` : '',
+            nsParam ? `/* NS: ${nsParam} */` : '',
+            '',
+        ].filter(Boolean).join('\n');
+
+        const finalBundle = header + parts.join('\n\n/* ─────────────────── */\n\n');
+        const bundleHash = crypto.createHash('sha256').update(finalBundle, 'utf8').digest('hex');
+        const etag = `"${bundleHash}"`;
+        res.set('Content-Type', 'application/javascript; charset=utf-8');
+        res.set('X-Bundle-Hash', bundleHash);
+        res.set('X-Bundle-Mode', bundleMode);
+        res.set('X-Bundle-Transform', 'window');
+        res.set('ETag', etag);
+        res.set('Cache-Control', 'no-cache');
+        if (!nocache && req.headers['if-none-match'] === etag) {
+            return res.status(304).end();
+        }
+        res.send(finalBundle);
+
+
+
+    } catch (err) {
+        console.error('[bundle/window] error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.post('/set', async (req, res) => {
     try {
@@ -777,6 +968,23 @@ app.post('/github-push', ensureAuth, async (req, res) => {
     }
 });
 
+app.post('/github-pushr', ensureAuth, async (req, res) => {
+    const { path: filePath, content, url, firebaseKey,
+        branch, message, saveToFirebase, firebaseSaveKey,
+        libraryMeta } = req.body;
+
+    if (!filePath) return res.status(400).json({ ok: false, error: 'path is required' });
+
+    const targetBranch = branch || DEFAULT_BRANCH;
+
+    return res.json({
+        ok: true,
+        path: filePath,
+        content, url, firebaseKey,
+        branch, message, saveToFirebase, firebaseSaveKey,
+        libraryMeta
+    });
+});
 // ─── GET /github-file ─────────────────────────────────────────────────────
 
 app.get('/github-file', ensureAuth, async (req, res) => {
@@ -1588,6 +1796,14 @@ app.get('/bundle', async (req, res) => {
         res.set('X-Bundle-Body-End', bodyMods.join(', '));
         res.set('X-Bundle-LibMod-Head', libHeadFiles.join(', '));
         res.set('X-Bundle-LibMod-Body', libBodyFiles.join(', '));
+
+        const etag = `"${bundleHash}"`;
+        res.set('ETag', etag);
+        res.set('Cache-Control', 'no-cache');
+        if (!nocache && req.headers['if-none-match'] === etag) {
+            return res.status(304).end();
+        }
+
         res.send(finalBundle);
 
     } catch (err) {
@@ -1826,10 +2042,128 @@ app.post('/bundle/invalidate', ensureAuth, async (req, res) => {
     const mc = MODULE_CACHE.size;
     const lc = LIBMOD_CACHE.size;
     const bc = BUNDLE_CACHE_MAP.size;
+    const cc = CSS_CACHE_MAP.size;
     MODULE_CACHE.clear();
     LIBMOD_CACHE.clear();
     BUNDLE_CACHE_MAP.clear();
-    res.json({ ok: true, cleared: { modules: mc, libmods: lc, bundles: bc } });
+    CSS_CACHE_MAP.clear();
+    res.json({ ok: true, cleared: { modules: mc, libmods: lc, bundles: bc, css: cc } });
+
+});
+
+
+// ─── GET /bundle/window ───────────────────────────────────────────────────
+//
+//  Toma los archivos de un libmod (o módulos del manifest) en orden,
+//  transforma import/export → window, y devuelve un bundle concatenado.
+//
+//  ?libmod=avatarStudio               → todos los archivos del libmod
+//  ?libmod=avatarStudio&header=true   → solo head
+//  ?libmod=avatarStudio&bodyend=true  → solo body_end
+//  ?needs=modA,modB                   → módulos del manifest transformados
+//  ?ns=MyApp                          → namespace raíz (default: libmod name o 'Bundle')
+//  &nocache=1                         → salta cache
+//
+app.get('/bundle/window', async (req, res) => {
+    const libmodParam = req.query.libmod?.trim();
+    const needsParam = req.query.needs;
+    const nsParam = req.query.ns?.trim();
+    const headerOnly = req.query.header === 'true';
+    const bodyendOnly = req.query.bodyend === 'true';
+    const nocache = req.query.nocache === '1';
+
+    const bundleMode = headerOnly ? 'header' : (bodyendOnly ? 'body_end' : 'full');
+
+    if (!libmodParam && !needsParam) {
+        return res.status(400).json({
+            error: 'Requiere ?libmod=nombre y/o ?needs=modA,modB',
+        });
+    }
+
+    const needsList = needsParam
+        ? needsParam.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
+    try {
+        const parts = [];
+
+        // ── 1. Módulos del manifest (needs) ──────────────────────────────
+        if (needsList.length) {
+            const manifest = await getBundleManifest();
+
+            const ordered = topoSort(needsList, manifest);
+            const rawParts = await Promise.all(
+                ordered.map(name => fetchBundleModule(name, manifest[name]))
+            );
+
+            rawParts.forEach((raw, i) => {
+                const modName = nsParam || ordered[i];
+                parts.push(transformToWindow(raw, modName));
+            });
+        }
+
+        // ── 2. LibMod ─────────────────────────────────────────────────────
+        if (libmodParam) {
+            const libmods = await getBundleLibmods();
+            const cfg = libmods[libmodParam];
+            if (!cfg) {
+                return res.status(404).json({ error: `LibMod desconocido: "${libmodParam}"` });
+            }
+
+            const basePath = cfg.basePath || '';
+            const branch = cfg.branch || DEFAULT_BRANCH;
+            const ns = nsParam || libmodParam;
+
+            const headFiles = cfg.head || [];
+            const bodyFiles = cfg.body_end || [];
+            const filesToLoad = bundleMode === 'header'
+                ? headFiles
+                : bundleMode === 'body_end'
+                    ? bodyFiles
+                    : [...headFiles, ...bodyFiles];
+
+            const rawFiles = await Promise.all(
+                filesToLoad.map(f => fetchLibmodFile(libmodParam, basePath, f, branch))
+            );
+
+            rawFiles.forEach((raw, i) => {
+                const fileEntry = filesToLoad[i];
+                const fileName = (typeof fileEntry === 'string' ? fileEntry : fileEntry.file)
+                    .replace(/\.[^.]+$/, '')          // sin extensión
+                    .replace(/[^a-zA-Z0-9_$]/g, '_'); // safe identifier
+
+                // sub-namespace: window['ns']['fileName']
+                const transformed = transformToWindow(raw, `${ns}.${fileName}`);
+                parts.push(transformed);
+            });
+
+            // Inicializar namespace raíz si no existe
+            parts.unshift(`window['${ns}'] = window['${ns}'] || {};\n`);
+        }
+
+        // ── 3. Concatenar ─────────────────────────────────────────────────
+        const header = [
+            `/* Window Bundle — ${new Date().toISOString()} */`,
+            `/* Mode: ${bundleMode} */`,
+            libmodParam ? `/* LibMod: ${libmodParam} */` : '',
+            needsList.length ? `/* Needs: ${needsList.join(' → ')} */` : '',
+            nsParam ? `/* NS: ${nsParam} */` : '',
+            '',
+        ].filter(Boolean).join('\n');
+
+        const finalBundle = header + parts.join('\n\n/* ─────────────────── */\n\n');
+        const bundleHash = crypto.createHash('sha256').update(finalBundle, 'utf8').digest('hex');
+
+        res.set('Content-Type', 'application/javascript; charset=utf-8');
+        res.set('X-Bundle-Hash', bundleHash);
+        res.set('X-Bundle-Mode', bundleMode);
+        res.set('X-Bundle-Transform', 'window');
+        res.send(finalBundle);
+
+    } catch (err) {
+        console.error('[bundle/window] error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/console', (req, res) => {
@@ -1839,6 +2173,136 @@ app.get('/console', (req, res) => {
     }
     res.sendFile(index);
 });
+
+app.get('/bundle/css', async (req, res) => {
+    const libmodParam = req.query.libmod?.trim();
+    const needsParam = req.query.needs;
+    const headerOnly = req.query.header === 'true';
+    const bodyendOnly = req.query.bodyend === 'true';
+    const nocache = req.query.nocache === '1';
+    const bundleMode = headerOnly ? 'header' : (bodyendOnly ? 'body_end' : 'full');
+
+    if (!libmodParam && !needsParam) {
+        return res.status(400).json({ error: 'Requiere ?libmod=nombre y/o ?needs=modA,modB' });
+    }
+
+    const needsList = needsParam
+        ? needsParam.split(',').map(s => s.trim()).filter(Boolean)
+        : [];
+
+    const cacheKey = `css:${libmodParam || ''}:${needsList.join(',')}:${bundleMode}`;
+    if (!nocache && CSS_CACHE_MAP.has(cacheKey)) {
+        const cached = CSS_CACHE_MAP.get(cacheKey);
+        const etag = `"${cached.hash}"`;
+        res.set('Content-Type', 'text/css; charset=utf-8');
+        res.set('ETag', etag);
+        res.set('Cache-Control', 'no-cache');
+        if (req.headers['if-none-match'] === etag) return res.status(304).end();
+        return res.send(cached.bundle);
+    }
+
+    try {
+        const parts = [];
+
+        // ── 1. Módulos del manifest ───────────────────────────────────────
+        if (needsList.length) {
+            const manifest = await getBundleManifest();
+            const ordered = topoSort(needsList, manifest);
+
+            for (const name of ordered) {
+                const mod = manifest[name];
+                if (!mod.githubPath || !isStyleFile(mod.githubPath)) continue;
+
+                const filename = mod.githubPath.split('/').pop();
+                const resolvedPath = `${JS_MODULES_BASE}/${filename}`;
+                const branch = mod.branch || DEFAULT_BRANCH;
+
+                const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
+                const ghRes = await fetch(apiUrl, {
+                    headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' },
+                });
+                if (!ghRes.ok) continue;
+
+                const data = await ghRes.json();
+                const raw = Buffer.from(data.content, 'base64').toString('utf8');
+
+                parts.push(`/* ── ${name} (${filename}) ── */\n${compileStyle(raw, filename)}\n`);
+            }
+        }
+
+        // ── 2. LibMod ─────────────────────────────────────────────────────
+        if (libmodParam) {
+            const libmods = await getBundleLibmods();
+            const cfg = libmods[libmodParam];
+            if (!cfg) return res.status(404).json({ error: `LibMod desconocido: "${libmodParam}"` });
+
+            const basePath = cfg.basePath || '';
+            const branch = cfg.branch || DEFAULT_BRANCH;
+            const headFiles = cfg.head || [];
+            const bodyFiles = cfg.body_end || [];
+
+            const filesToLoad = bundleMode === 'header'
+                ? headFiles
+                : bundleMode === 'body_end'
+                    ? bodyFiles
+                    : [...headFiles, ...bodyFiles];
+
+            // Solo archivos de estilo
+            const styleFiles = filesToLoad.filter(f => isStyleFile(typeof f === 'string' ? f : f.file));
+
+            for (const fileEntry of styleFiles) {
+                const fileName = typeof fileEntry === 'string' ? fileEntry : fileEntry.file;
+                const fileLabel = typeof fileEntry === 'string' ? '' : (fileEntry.label || '');
+                const resolvedPath = basePath ? `${basePath}/${fileName}`.replace(/\/\//g, '/') : fileName;
+
+                const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
+                const ghRes = await fetch(apiUrl, {
+                    headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' },
+                });
+                if (!ghRes.ok) continue;
+
+                const data = await ghRes.json();
+                const raw = Buffer.from(data.content, 'base64').toString('utf8');
+                const comment = fileLabel
+                    ? `/* ── ${libmodParam}/${fileName} — ${fileLabel} ── */`
+                    : `/* ── ${libmodParam}/${fileName} ── */`;
+
+                parts.push(`${comment}\n${compileStyle(raw, fileName)}\n`);
+            }
+        }
+
+        if (!parts.length) {
+            return res.status(200).set('Content-Type', 'text/css; charset=utf-8').send('/* no style files found */');
+        }
+
+        const header = [
+            `/* CSS Bundle — ${new Date().toISOString()} */`,
+            `/* Mode: ${bundleMode} */`,
+            libmodParam ? `/* LibMod: ${libmodParam} */` : '',
+            needsList.length ? `/* Needs: ${needsList.join(' → ')} */` : '',
+            '',
+        ].filter(Boolean).join('\n');
+
+        const finalBundle = header + parts.join('\n');
+        const bundleHash = crypto.createHash('sha256').update(finalBundle, 'utf8').digest('hex');
+
+        if (!nocache) CSS_CACHE_MAP.set(cacheKey, { bundle: finalBundle, hash: bundleHash });
+
+        const etag = `"${bundleHash}"`;
+        res.set('Content-Type', 'text/css; charset=utf-8');
+        res.set('ETag', etag);
+        res.set('Cache-Control', 'no-cache');
+        res.set('X-Bundle-Hash', bundleHash);
+        res.set('X-Bundle-Mode', bundleMode);
+        if (!nocache && req.headers['if-none-match'] === etag) return res.status(304).end();
+        res.send(finalBundle);
+
+    } catch (err) {
+        console.error('[bundle/css] error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // ════════════════════════════════════════════════════════════════════════
 // BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════
@@ -1873,3 +2337,72 @@ async function bootstrapLibrary() {
         console.log(`✓ Socket notify → ${SOCKET_SERVER}`);
     });
 })();
+
+/* 
+🧠 Resumen de fortalezas
+Bundle dinámico inteligente: separás por página, por libmod y por modo (header/body_end).
+
+Transformación ESM → window: ideal para compatibilidad sin módulos nativos.
+
+Caché en memoria: MODULE_CACHE, LIBMOD_CACHE y BUNDLE_CACHE_MAP evitan lecturas repetidas de GitHub.
+
+Biblioteca sincronizada: library_index se actualiza automáticamente con metadatos.
+
+WebSockets integrados: notificás cambios a clientes autenticados.
+
+🔥 Sugerencias prioritarias
+1. Agregar cabeceras de caché HTTP (gran impacto inmediato)
+Ahora el bundle se genera y se envía sin directivas de caché. El navegador puede guardarlo, pero no sabe cuándo invalidarlo.
+Propongo calcular un ETag con el hash que ya generás (X-Bundle-Hash) y devolver Cache-Control: no-cache para que siempre revalide (ahorro de ancho de banda en 304). O si querés máxima velocidad, podés usar Cache-Control: public, max-age=3600, immutable y forzar la renovación con un parámetro de versión en la URL (?v=hash).
+
+Ejemplo de implementación en /bundle:
+
+javascript
+const etag = `"${bundleHash}"`;
+res.set('ETag', etag);
+if (req.headers['if-none-match'] === etag) {
+  return res.status(304).end();
+}
+res.set('Cache-Control', 'no-cache');  // Siempre revalida con ETag
+2. Cachear manifiestos y páginas en memoria (lectura Firestore)
+Actualmente getBundleManifest, getBundlePages y getBundleLibmods consultan Firestore en cada petición.
+Solución: guardarlos en un objeto en memoria (como hacés con los módulos) y solo actualizarlos cuando se modifiquen (ya tenés saveBundleManifest, etc., que limpian cachés).
+Incluso podrías cargarlos al iniciar el servidor y usar las notificaciones internas para refrescarlos si otro proceso los cambia.
+
+3. Evitar condiciones de carrera en syncToLibrary
+Actualmente hacés getLibrary → modificás → saveLibrary. Si dos peticiones concurrentes modifican la biblioteca, una puede sobrescribir a la otra.
+Recomiendo usar una transacción de Firestore para leer y escribir la biblioteca atómicamente. Como es un solo documento, también podés usar runTransaction.
+
+4. Limpiar el código duplicado de /bundle/window
+Hay dos definiciones idénticas de la ruta /bundle/window. Solo la última tiene efecto, pero es confuso. Dejá una sola y mantenela organizada.
+
+5. Mejorar el transformador ESM con una herramienta más robusta
+transformToWindow usa regex y puede fallar con sintaxis compleja (ej. import('...'), side effects, etc.).
+Considerá usar esbuild (rapidísimo) para transformar a IIFE con format: 'iife' y globalName. Podés hacerlo en el bundle final antes de enviar, o al leer cada archivo.
+
+6. Compresión HTTP
+Para bundles que pueden ser grandes (40 000 líneas), agregar compression middleware de Express (gzip/brotli) reducirá el tiempo de transferencia drásticamente.
+
+7. Proteger endpoints de abuso (rate limiting)
+Rutas como /bundle y /bundle/window no tienen autenticación ni límite. Un atacante podría saturar el servidor pidiendo bundles gigantes.
+Agregá express-rate-limit al menos en las rutas públicas.
+
+8. Pre-carga de archivos frecuentes
+Al iniciar el servidor, podrías precargar los bundles más usados (o los libmods/manifest) en el cache de memoria para que la primera petición no sea lenta.
+
+9. Centralizar el manejo de errores
+Muchos endpoints tienen try/catch que devuelven { error: err.message } con estado 500, pero no loguean el stack. Creá un middleware de error global o un helper que registre y responda.
+
+10. Considerar un hash versionado en las URLs del bundle
+Así los clientes pueden obtener una nueva versión sin depender de no-cache. Ejemplo:
+/bundle?page=nexus_s&v=20250619.1 donde v sea el hash del contenido.
+Podés generar la etiqueta <script> con ese hash desde el servidor (ya que él conoce el contenido).
+
+🧪 ¿Es buena la arquitectura actual?
+Sí, es sólida y pragmática. Combina lo mejor de un backend dinámico con la capacidad de reflejar cambios en tiempo real.
+Con las mejoras sugeridas, podés llevarla a producción con mucha más eficiencia y seguridad.
+
+Si querés, puedo detallar la implementación de alguna de estas mejoras en el código.
+
+
+*/
