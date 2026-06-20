@@ -1501,10 +1501,8 @@ function topoSort(names, manifest) {
 }
 
 // ─── Module fetcher ───────────────────────────────────────────────────────
-
 async function fetchBundleModule(name, mod) {
     if (MODULE_CACHE.has(name)) return MODULE_CACHE.get(name);
-
     if (!mod.githubPath) throw new Error(`Módulo "${name}" no tiene "githubPath"`);
 
     const filename = mod.githubPath.split('/').pop();
@@ -1513,36 +1511,19 @@ async function fetchBundleModule(name, mod) {
 
     console.log(`[bundle] fetch: ${resolvedPath}@${branch}`);
 
-    const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
-    const ghRes = await fetch(apiUrl, {
-        headers: {
-            Authorization: `token ${GITHUB_TOKEN}`,
-            Accept: 'application/vnd.github+json',
-        },
-    });
+    const raw = await fetchGithubContent(resolvedPath, branch);
+    if (!raw) throw new Error(`No se pudo obtener contenido: ${resolvedPath}`);
 
-    if (ghRes.status === 404) throw new Error(`No encontrado en repo: ${resolvedPath}`);
-    if (!ghRes.ok) {
-        const err = await ghRes.json();
-        throw new Error(`GitHub error ${resolvedPath}: ${err.message}`);
-    }
-
-    const data = await ghRes.json();
-    const raw = Buffer.from(data.content, 'base64').toString('utf8');
     const wrapped = `\n/* ── ${name} (${resolvedPath}) ── */\n${raw}\n`;
-
     MODULE_CACHE.set(name, wrapped);
     return wrapped;
 }
 
 // ─── Libmod file fetcher ──────────────────────────────────────────────────
-
 async function fetchLibmodFile(libmodName, basePath, fileEntry, branchOverride) {
     const fileName = typeof fileEntry === 'string' ? fileEntry : fileEntry.file;
     const fileLabel = typeof fileEntry === 'string' ? '' : (fileEntry.label || '');
-    const resolvedPath = basePath
-        ? `${basePath}/${fileName}`.replace(/\/\//g, '/')
-        : fileName;
+    const resolvedPath = basePath ? `${basePath}/${fileName}`.replace(/\/\//g, '/') : fileName;
     const branch = branchOverride || DEFAULT_BRANCH;
     const cacheKey = `${libmodName}::${resolvedPath}@${branch}`;
 
@@ -1550,22 +1531,9 @@ async function fetchLibmodFile(libmodName, basePath, fileEntry, branchOverride) 
 
     console.log(`[libmod] fetch: ${resolvedPath}@${branch}`);
 
-    const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
-    const ghRes = await fetch(apiUrl, {
-        headers: {
-            Authorization: `token ${GITHUB_TOKEN}`,
-            Accept: 'application/vnd.github+json',
-        },
-    });
+    const raw = await fetchGithubContent(resolvedPath, branch);
+    if (!raw) throw new Error(`No se pudo obtener: ${resolvedPath}`);
 
-    if (ghRes.status === 404) throw new Error(`LibMod file not found: ${resolvedPath}`);
-    if (!ghRes.ok) {
-        const err = await ghRes.json();
-        throw new Error(`GitHub error ${resolvedPath}: ${err.message}`);
-    }
-
-    const data = await ghRes.json();
-    const raw = Buffer.from(data.content, 'base64').toString('utf8');
     const comment = fileLabel
         ? `/* ── ${libmodName}/${fileName} — ${fileLabel} ── */`
         : `/* ── ${libmodName}/${fileName} ── */`;
@@ -1574,7 +1542,6 @@ async function fetchLibmodFile(libmodName, basePath, fileEntry, branchOverride) 
     LIBMOD_CACHE.set(cacheKey, wrapped);
     return wrapped;
 }
-
 // ─── Bundle builder ───────────────────────────────────────────────────────
 
 async function buildBundle(orderedNames, manifest) {
@@ -2250,16 +2217,10 @@ app.get('/bundle/css', async (req, res) => {
                 const resolvedPath = `${JS_MODULES_BASE}/${filename}`;
                 const branch = mod.branch || DEFAULT_BRANCH;
 
-                const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
-                const ghRes = await fetch(apiUrl, {
-                    headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' },
-                });
-                if (!ghRes.ok) continue;
-
-                const data = await ghRes.json();
-                const raw = Buffer.from(data.content, 'base64').toString('utf8');
-
+                const raw = await fetchGithubContent(resolvedPath, branch);
+                if (!raw) continue;
                 parts.push(`/* ── ${name} (${filename}) ── */\n${compileStyle(raw, filename)}\n`);
+
             }
         }
 
@@ -2288,23 +2249,19 @@ app.get('/bundle/css', async (req, res) => {
                 const fileLabel = typeof fileEntry === 'string' ? '' : (fileEntry.label || '');
                 const resolvedPath = basePath ? `${basePath}/${fileName}`.replace(/\/\//g, '/') : fileName;
 
-                const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
-                const ghRes = await fetch(apiUrl, {
-                    headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' },
-                });
-                if (!ghRes.ok) continue;
-
-                const data = await ghRes.json();
-                const raw = Buffer.from(data.content, 'base64').toString('utf8');
+                const raw = await fetchGithubContent(resolvedPath, branch);
+                if (!raw) continue;
                 const comment = fileLabel
                     ? `/* ── ${libmodParam}/${fileName} — ${fileLabel} ── */`
                     : `/* ── ${libmodParam}/${fileName} ── */`;
-
                 parts.push(`${comment}\n${compileStyle(raw, fileName)}\n`);
+
             }
         }
 
         if (!parts.length) {
+            console.log(parts);
+
             return res.status(200).set('Content-Type', 'text/css; charset=utf-8').send('/* no style files found */');
         }
 
@@ -2340,7 +2297,41 @@ app.get('/bundle/css', async (req, res) => {
 // BOOTSTRAP
 // ════════════════════════════════════════════════════════════════════════
 
+// ── helper reutilizable — pegalo arriba junto a compileStyle ──────────────
+async function fetchGithubContent(resolvedPath, branch) {
+    const apiUrl = `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/contents/${resolvedPath}?ref=${branch}`;
+    const ghRes = await fetch(apiUrl, {
+        headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' },
+    });
 
+    if (!ghRes.ok) {
+        console.warn(`[github] skip ${resolvedPath}: HTTP ${ghRes.status}`);
+        return null;
+    }
+
+    const data = await ghRes.json();
+
+    // Archivo > 1MB: content viene vacío, usar Blobs API
+    if (!data.content || data.encoding === 'none') {
+        if (!data.sha) {
+            console.warn(`[github] sin content ni SHA: ${resolvedPath}`);
+            return null;
+        }
+        console.warn(`[github] archivo grande, usando blob API: ${resolvedPath}`);
+        const blobRes = await fetch(
+            `https://api.github.com/repos/${GITHUB_USER}/${REPO_NAME}/git/blobs/${data.sha}`,
+            { headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github+json' } }
+        );
+        if (!blobRes.ok) {
+            console.warn(`[github] blob API error: ${resolvedPath}`);
+            return null;
+        }
+        const blob = await blobRes.json();
+        return Buffer.from(blob.content.replace(/\n/g, ''), 'base64').toString('utf8');
+    }
+
+    return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
+}
 async function bootstrapLibrary() {
     const snap = await docRef(LIBRARY_KEY).get();
     if (!snap.exists) {
